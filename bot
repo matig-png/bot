@@ -96,7 +96,7 @@ def build_earn_menu() -> InlineKeyboardMarkup:
     )
     return builder.as_markup()
 
-def build_admin_switch_menu() -> InlineKeyboardMarkup:  # ИСПРАВЛЕНО: убрал параметр user_id
+def build_admin_switch_menu() -> InlineKeyboardMarkup:
     """Create menu for switching between admin and user modes."""
     builder = InlineKeyboardBuilder()
     builder.row(
@@ -105,17 +105,14 @@ def build_admin_switch_menu() -> InlineKeyboardMarkup:  # ИСПРАВЛЕНО: 
     )
     return builder.as_markup()
 
-def build_admin_menu(user_id: int = None) -> InlineKeyboardMarkup:  # ИСПРАВЛЕНО: сделал user_id опциональным
+def build_admin_menu(user_id: int) -> InlineKeyboardMarkup:
     """Create admin menu keyboard with permissions check."""
     builder = InlineKeyboardBuilder()
     
-    # Проверяем права на списание и сброс топа
-    if user_id == MAIN_ADMIN_ID:
-        builder.row(
-            InlineKeyboardButton(text="Сбросить топ", callback_data="admin_reset_top"),
-            InlineKeyboardButton(text="Списать луны", callback_data="admin_deduct_moons")
-        )
-    
+    builder.row(
+        InlineKeyboardButton(text="Сбросить топ", callback_data="admin_reset_top"),
+        InlineKeyboardButton(text="Списать луны", callback_data="admin_deduct_moons")
+    )
     builder.row(
         InlineKeyboardButton(text="Список пользователей", callback_data="admin_list_users"),
         InlineKeyboardButton(text="📊 Мой баланс", callback_data="admin_balance")
@@ -172,10 +169,7 @@ def register_user(user: types.User) -> None:
         if uid in ADMIN_IDS and not users[uid]["is_admin"]:
             users[uid]["is_admin"] = True
             # Устанавливаем соответствующий баланс
-            if uid == MAIN_ADMIN_ID:
-                users[uid]["moons"] = float('inf')
-            else:
-                users[uid]["moons"] = ADMIN_STARTING_BALANCE
+            users[uid]["moons"] = float('inf') if uid == MAIN_ADMIN_ID else ADMIN_STARTING_BALANCE
             save_data()
 
 def get_user_balance(user_id: int) -> Union[float, int]:
@@ -224,9 +218,9 @@ def deduct_moons(user_id: int, amount: int) -> bool:
     return True
 
 def reset_top() -> None:
-    """Reset all user balances to zero (except main admin)."""  # ИСПРАВЛЕНО: MAIN_ADMIN_ID вместо VIKTOS_USER_ID
+    """Reset all user balances to zero (except admin)."""
     for uid, user_data in users.items():
-        if uid != MAIN_ADMIN_ID:
+        if uid != VIKTOS_USER_ID:
             user_data["moons"] = 0
     save_data()
     logger.info("Top has been reset by admin")
@@ -235,7 +229,7 @@ def get_all_users() -> List[Tuple[str, Union[float, int]]]:
     """Get list of all users with their moon balances."""
     user_list = []
     for uid, user_data in users.items():
-        if uid != MAIN_ADMIN_ID:  # ИСПРАВЛЕНО: MAIN_ADMIN_ID вместо VIKTOS_USER_ID
+        if uid != MAIN_ADMIN_ID:
             user_list.append((user_data["username"], user_data["moons"]))
     
     user_list.sort(key=lambda x: x[1] if x[1] != float('inf') else 0, reverse=True)
@@ -255,16 +249,13 @@ def set_admin_infinite_balance(admin_id: int) -> None:
         save_data()
         logger.info(f"Main admin {admin_id} now has infinite balance")
 
-# Загружаем данные при старте
-load_data()
-
 # Command handlers
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message) -> None:
     """Handle the /start command."""
     register_user(message.from_user)
     
-    if message.from_user.id == MAIN_ADMIN_ID:  # ИСПРАВЛЕНО: MAIN_ADMIN_ID вместо VIKTOS_USER_ID
+    if message.from_user.id == VIKTOS_USER_ID:
         await message.answer(
             "👋 Добро пожаловать! Выберите режим:",
             reply_markup=build_admin_switch_menu()
@@ -275,7 +266,7 @@ async def cmd_start(message: types.Message) -> None:
 @dp.message(Command("mode"))
 async def cmd_mode(message: types.Message) -> None:
     """Switch between admin and user modes."""
-    if message.from_user.id == MAIN_ADMIN_ID:  # ИСПРАВЛЕНО: MAIN_ADMIN_ID вместо VIKTOS_USER_ID
+    if message.from_user.id == VIKTOS_USER_ID:
         await message.answer("Выберите режим:", reply_markup=build_admin_switch_menu())
     else:
         await message.answer("У вас нет прав доступа к этой команде.")
@@ -283,8 +274,8 @@ async def cmd_mode(message: types.Message) -> None:
 @dp.message(Command("admin"))
 async def cmd_admin(message: types.Message) -> None:
     """Admin command handler."""
-    if message.from_user.id == MAIN_ADMIN_ID:  # ИСПРАВЛЕНО: MAIN_ADMIN_ID вместо VIKTOS_USER_ID
-        await message.answer("Панель администратора:", reply_markup=build_admin_menu(message.from_user.id))
+    if message.from_user.id == VIKTOS_USER_ID:
+        await message.answer("Панель администратора:", reply_markup=build_admin_menu())
     else:
         await message.answer("У вас нет прав доступа к этой команде.")
 
@@ -292,8 +283,8 @@ async def cmd_admin(message: types.Message) -> None:
 async def cancel_handler(message: types.Message, state: FSMContext) -> None:
     """Cancel current action and return to main menu."""
     await state.clear()
-    if message.from_user.id == MAIN_ADMIN_ID:  # ИСПРАВЛЕНО: MAIN_ADMIN_ID вместо VIKTOS_USER_ID
-        await message.answer("Действие отменено.", reply_markup=build_admin_menu(message.from_user.id))
+    if message.from_user.id == VIKTOS_USER_ID:
+        await message.answer("Действие отменено.", reply_markup=build_admin_menu())
     else:
         await message.answer("Действие отменено.", reply_markup=build_main_menu())
 
@@ -301,20 +292,20 @@ async def cancel_handler(message: types.Message, state: FSMContext) -> None:
 @dp.callback_query(F.data == "admin_reset_top")
 async def admin_reset_top(callback: types.CallbackQuery) -> None:
     """Reset top balances."""
-    if callback.from_user.id == MAIN_ADMIN_ID:  # ИСПРАВЛЕНО: MAIN_ADMIN_ID вместо VIKTOS_USER_ID
+    if callback.from_user.id == VIKTOS_USER_ID:
         reset_top()
         await callback.answer("Топ успешно сброшен!", show_alert=True)
-        await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu(callback.from_user.id))
+        await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu())
     else:
         await callback.answer("Доступ запрещен", show_alert=True)
 
 @dp.callback_query(F.data == "admin_list_users")
 async def admin_list_users(callback: types.CallbackQuery) -> None:
     """Show list of all users with balances."""
-    if callback.from_user.id in ADMIN_IDS:  # ИСПРАВЛЕНО: проверка на всех админов
+    if callback.from_user.id in ADMIN_IDS:
         user_list = []
         for uid, user_data in users.items():
-            if uid != MAIN_ADMIN_ID:  # ИСПРАВЛЕНО: MAIN_ADMIN_ID вместо VIKTOS_USER_ID
+            if uid != MAIN_ADMIN_ID:
                 # Используем имя, если нет юзернейма
                 display_name = f"@{user_data['username']}" if not user_data['username'].startswith('user') else user_data['name']
                 user_list.append((display_name, user_data["moons"], user_data["name"]))
@@ -328,7 +319,7 @@ async def admin_list_users(callback: types.CallbackQuery) -> None:
         for i, (display_name, moons, full_name) in enumerate(user_list, 1):
             text += f"{i}. {display_name}"
             if not display_name.startswith('@'):  # Добавляем ID если нет юзернейма
-                text += f" (ID: {full_name})"
+                text += f" (ID: {list(users.keys())[list(users.values()).index(user_list[i-1][2])]})"
             text += f" - {moons if moons != float('inf') else '∞'} 🌗\n"
         
         text += f"\nВсего пользователей: {len(user_list)}"
@@ -341,11 +332,11 @@ async def admin_list_users(callback: types.CallbackQuery) -> None:
 @dp.callback_query(F.data == "admin_deduct_moons")
 async def admin_deduct_moons_start(callback: types.CallbackQuery, state: FSMContext) -> None:
     """Start moon deduction process."""
-    if callback.from_user.id == MAIN_ADMIN_ID:  # ИСПРАВЛЕНО: MAIN_ADMIN_ID вместо VIKTOS_USER_ID
-        visible_users = [u for uid, u in users.items() if uid != MAIN_ADMIN_ID]  # ИСПРАВЛЕНО: MAIN_ADMIN_ID вместо VIKTOS_USER_ID
+    if callback.from_user.id == VIKTOS_USER_ID:
+        visible_users = [u for uid, u in users.items() if uid != VIKTOS_USER_ID]
         
         if not visible_users:
-            await callback.message.edit_text("Нет пользователей для списания.", reply_markup=build_admin_menu(callback.from_user.id))
+            await callback.message.edit_text("Нет пользователей для списания.", reply_markup=build_admin_menu())
             await callback.answer()
             return
 
@@ -359,7 +350,7 @@ async def admin_deduct_moons_start(callback: types.CallbackQuery, state: FSMCont
 @dp.message(AdminStates.WaitingUsernameForDeduct)
 async def admin_receive_username(message: types.Message, state: FSMContext) -> None:
     """Process username for deduction."""
-    if message.from_user.id != MAIN_ADMIN_ID:  # ИСПРАВЛЕНО: MAIN_ADMIN_ID вместо VIKTOS_USER_ID
+    if message.from_user.id != VIKTOS_USER_ID:
         await state.clear()
         return
 
@@ -367,7 +358,7 @@ async def admin_receive_username(message: types.Message, state: FSMContext) -> N
     
     target_uid = None
     for uid, data in users.items():
-        if data["username"].lower() == username and uid != MAIN_ADMIN_ID:  # ИСПРАВЛЕНО: MAIN_ADMIN_ID вместо VIKTOS_USER_ID
+        if data["username"].lower() == username and uid != VIKTOS_USER_ID:
             target_uid = uid
             break
 
@@ -382,7 +373,7 @@ async def admin_receive_username(message: types.Message, state: FSMContext) -> N
 @dp.message(AdminStates.WaitingAmountForDeduct)
 async def admin_receive_amount(message: types.Message, state: FSMContext) -> None:
     """Process amount for deduction."""
-    if message.from_user.id != MAIN_ADMIN_ID:  # ИСПРАВЛЕНО: MAIN_ADMIN_ID вместо VIKTOS_USER_ID
+    if message.from_user.id != VIKTOS_USER_ID:
         await state.clear()
         return
 
@@ -407,44 +398,21 @@ async def admin_receive_amount(message: types.Message, state: FSMContext) -> Non
         await message.answer(
             f"Успешно списано {amount} 🌗 у пользователя @{target_username}.\n"
             f"Новый баланс: {users[target_uid]['moons']} 🌗",
-            reply_markup=build_admin_menu(message.from_user.id)
+            reply_markup=build_admin_menu()
         )
     else:
         await message.answer("Ошибка при списании лун.")
 
     await state.clear()
 
-# Баланс админа
-@dp.callback_query(F.data == "admin_balance")
-async def admin_balance_handler(callback: types.CallbackQuery) -> None:
-    """Show admin balance."""
-    if callback.from_user.id in ADMIN_IDS:
-        moons = get_user_balance(callback.from_user.id)
-        text = f"Ваш баланс - {'∞' if moons == float('inf') else moons} 🌗"
-        await callback.message.edit_text(text, reply_markup=build_admin_menu(callback.from_user.id))
-        await callback.answer()
+@dp.callback_query(F.data == "main_menu")
+async def back_to_main_menu(callback: types.CallbackQuery) -> None:
+    """Return to main menu."""
+    if callback.from_user.id == VIKTOS_USER_ID:
+        await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu())
     else:
-        await callback.answer("Доступ запрещен", show_alert=True)
-
-@dp.callback_query(F.data == "admin_infinite_balance")
-async def admin_infinite_balance_handler(callback: types.CallbackQuery) -> None:
-    """Set infinite balance for admin."""
-    if callback.from_user.id == MAIN_ADMIN_ID:
-        set_admin_infinite_balance(callback.from_user.id)
-        await callback.answer("Баланс установлен на бесконечный!", show_alert=True)
-        await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu(callback.from_user.id))
-    else:
-        await callback.answer("Доступ запрещен", show_alert=True)
-
-@dp.callback_query(F.data == "admin_normal_balance")
-async def admin_normal_balance_handler(callback: types.CallbackQuery) -> None:
-    """Set normal balance for admin."""
-    if callback.from_user.id in ADMIN_IDS and callback.from_user.id != MAIN_ADMIN_ID:
-        set_admin_normal_balance(callback.from_user.id)
-        await callback.answer(f"Баланс установлен на обычный: {ADMIN_STARTING_BALANCE} 🌗", show_alert=True)
-        await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu(callback.from_user.id))
-    else:
-        await callback.answer("Доступ запрещен", show_alert=True)
+        await callback.message.edit_text("Выбор действия:", reply_markup=build_main_menu())
+    await callback.answer()
 
 # Callback query handlers
 @dp.callback_query(F.data == "earn")
@@ -467,8 +435,8 @@ async def quiz_start(callback: types.CallbackQuery) -> None:
     if users[uid]["quiz_passed"]:
         await callback.answer("Вы уже прошли викторину", show_alert=True)
         await asyncio.sleep(1)
-        if uid == MAIN_ADMIN_ID:  # ИСПРАВЛЕНО: MAIN_ADMIN_ID вместо VIKTOS_USER_ID
-            await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu(uid))
+        if uid == VIKTOS_USER_ID:
+            await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu())
         else:
             await callback.message.edit_text("Выбор действия:", reply_markup=build_main_menu())
         return
@@ -484,8 +452,8 @@ async def quiz_start(callback: types.CallbackQuery) -> None:
 @dp.callback_query(F.data == "quiz_cancel")
 async def quiz_cancel(callback: types.CallbackQuery) -> None:
     """Cancel the quiz and return to main menu."""
-    if callback.from_user.id == MAIN_ADMIN_ID:  # ИСПРАВЛЕНО: MAIN_ADMIN_ID вместо VIKTOS_USER_ID
-        await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu(callback.from_user.id))
+    if callback.from_user.id == VIKTOS_USER_ID:
+        await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu())
     else:
         await callback.message.edit_text("Выбор действия:", reply_markup=build_main_menu())
     await callback.answer()
@@ -493,15 +461,15 @@ async def quiz_cancel(callback: types.CallbackQuery) -> None:
 @dp.callback_query(F.data == "user_mode")
 async def switch_to_user_mode(callback: types.CallbackQuery) -> None:
     """Switch to user mode."""
-    if callback.from_user.id in ADMIN_IDS:
+    if callback.from_user.id == VIKTOS_USER_ID:
         await callback.message.edit_text("Выбор действия:", reply_markup=build_main_menu())
     await callback.answer()
 
 @dp.callback_query(F.data == "admin_mode")
 async def switch_to_admin_mode(callback: types.CallbackQuery) -> None:
     """Switch to admin mode."""
-    if callback.from_user.id in ADMIN_IDS:
-        await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu(callback.from_user.id))
+    if callback.from_user.id == VIKTOS_USER_ID:
+        await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu())
     await callback.answer()
 
 # Quiz questions and answers
@@ -556,22 +524,32 @@ async def quiz_answers(callback: types.CallbackQuery) -> None:
         add_moons(uid, QUIZ_REWARD)
 
         if data.startswith("quiz_a1"):
-            await quiz_questions(callback)
-            callback.data = "quiz_q2"
+            await quiz_questions(types.CallbackQuery(
+                id=callback.id,
+                from_user=callback.from_user,
+                chat_instance=callback.chat_instance,
+                message=callback.message,
+                data="quiz_q2"
+            ))
         elif data.startswith("quiz_a2"):
-            await quiz_questions(callback)
-            callback.data = "quiz_q3"
+            await quiz_questions(types.CallbackQuery(
+                id=callback.id,
+                from_user=callback.from_user,
+                chat_instance=callback.chat_instance,
+                message=callback.message,
+                data="quiz_q3"
+            ))
         elif data.startswith("quiz_a3"):
             users[uid]["quiz_passed"] = True
             await callback.answer("Вы прошли викторину!")
-            if uid == MAIN_ADMIN_ID:  # ИСПРАВЛЕНО: MAIN_ADMIN_ID вместо VIKTOS_USER_ID
-                await callback.message.edit_text("Вы прошли викторину! Панель администратора:", reply_markup=build_admin_menu(uid))
+            if uid == VIKTOS_USER_ID:
+                await callback.message.edit_text("Вы прошли викторину! Панель администратора:", reply_markup=build_admin_menu())
             else:
                 await callback.message.edit_text("Вы прошли викторину! Выбор действия:", reply_markup=build_main_menu())
     else:
         await callback.answer("Неправильный ответ", show_alert=True)
-        if uid == MAIN_ADMIN_ID:  # ИСПРАВЛЕНО: MAIN_ADMIN_ID вместо VIKTOS_USER_ID
-            await callback.message.edit_text("Неправильный ответ\n\nПанель администратора:", reply_markup=build_admin_menu(uid))
+        if uid == VIKTOS_USER_ID:
+            await callback.message.edit_text("Неправильный ответ\n\nПанель администратора:", reply_markup=build_admin_menu())
         else:
             await callback.message.edit_text("Неправильный ответ\n\nВыбор действия:", reply_markup=build_main_menu())
 
@@ -581,7 +559,7 @@ async def transfer_start(callback: types.CallbackQuery, state: FSMContext) -> No
     """Start the transfer process."""
     visible_users = []
     for uid, u in users.items():
-        if uid != MAIN_ADMIN_ID and uid != callback.from_user.id:  # ИСПРАВЛЕНО: MAIN_ADMIN_ID вместо VIKTOS_USER_ID
+        if uid != MAIN_ADMIN_ID and uid != callback.from_user.id:
             # Используем имя, если нет юзернейма
             display_name = f"@{u['username']}" if not u['username'].startswith('user') else f"{u['name']} (ID: {uid})"
             visible_users.append((display_name, u['username']))
@@ -608,7 +586,7 @@ async def receive_receiver(message: types.Message, state: FSMContext) -> None:
     # Попробуем найти по ID
     try:
         potential_uid = int(receiver_input)
-        if potential_uid in users and potential_uid != MAIN_ADMIN_ID:  # ИСПРАВЛЕНО: MAIN_ADMIN_ID вместо VIKTOS_USER_ID
+        if potential_uid in users and potential_uid != MAIN_ADMIN_ID:
             receiver_uid = potential_uid
     except ValueError:
         pass  # Не число, ищем по username
@@ -617,7 +595,7 @@ async def receive_receiver(message: types.Message, state: FSMContext) -> None:
     if receiver_uid is None:
         for uid, data in users.items():
             if (data["username"].lower() == receiver_input or 
-                data["name"].lower() == receiver_input) and uid != MAIN_ADMIN_ID:  # ИСПРАВЛЕНО: MAIN_ADMIN_ID вместо VIKTOS_USER_ID
+                data["name"].lower() == receiver_input) and uid != MAIN_ADMIN_ID:
                 receiver_uid = uid
                 break
 
@@ -676,7 +654,7 @@ async def show_top(callback: types.CallbackQuery) -> None:
     """Show top users by moon balance."""
     filtered = []
     for uid, u in users.items():
-        if uid != MAIN_ADMIN_ID:  # ИСПРАВЛЕНО: MAIN_ADMIN_ID вместо VIKTOS_USER_ID
+        if uid != MAIN_ADMIN_ID:
             # Используем имя, если нет юзернейма
             display_name = f"@{u['username']}" if not u['username'].startswith('user') else u['name']
             filtered.append((display_name, u["moons"]))
