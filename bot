@@ -10,7 +10,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.client.session.aiohttp import AiohttpSession
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -24,8 +23,6 @@ CHANNEL_URL = "https://t.me/WINGSOFFIRECHANNEL"
 QUIZ_REWARD = 50
 DATA_FILE = "users_data.json"
 ADMIN_STARTING_BALANCE = 100  # Стартовый баланс для обычных админов
-
-session = AiohttpSession(proxy='http://proxy.server:3128')
 
 # Data storage
 users: Dict[int, Dict[str, Any]] = {}
@@ -46,7 +43,7 @@ class TransferStates(StatesGroup):
     WaitingAmount = State()
 
 # Initialize bot and dispatcher
-bot = Bot(token=TOKEN, session=session)
+bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 # Data persistence functions
