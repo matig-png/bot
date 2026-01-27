@@ -3,6 +3,7 @@ import logging
 from typing import Dict, Any, Union, List, Tuple
 import json
 import os
+from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -17,12 +18,14 @@ logger = logging.getLogger(__name__)
 
 # Constants
 TOKEN = "8216288128:AAHWCLpy-tPcFKjbpM2hUN1xt6P850mi5qE"
-MAIN_ADMIN_ID = 6098677257  # Главный админ с бесконечным балансом
-ADMIN_IDS = {6098677257, 8092280284, 8366347415}  # Все админы (включая главного)
+MAIN_ADMIN_ID = 6098677257
+ADMIN_IDS = {6098677257, 8092280284, 8366347415}
 CHANNEL_URL = "https://t.me/WINGSOFFIRECHANNEL"
+TAKES_CHANNEL = "@WINGSOFFIRECHANNEL"  # Канал для пересылки тейков
+MAX_TAKES_PER_DAY = 3  # Максимум тейков в 24 часа
 QUIZ_REWARD = 50
 DATA_FILE = "users_data.json"
-ADMIN_STARTING_BALANCE = 100  # Стартовый баланс для обычных админов
+ADMIN_STARTING_BALANCE = 100
 
 # Data storage
 users: Dict[int, Dict[str, Any]] = {}
@@ -42,6 +45,9 @@ class TransferStates(StatesGroup):
     WaitingReceiver = State()
     WaitingAmount = State()
 
+class TakeStates(StatesGroup):
+    WaitingTake = State()
+
 # Initialize bot and dispatcher
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -57,10 +63,11 @@ def load_data():
                 users = {int(k): v for k, v in data.get('users', {}).items()}
                 user_id_to_username = {int(k): v for k, v in data.get('user_id_to_username', {}).items()}
                 
-                # Добавляем поле show_in_top для старых пользователей (обратная совместимость)
                 for user_data in users.values():
                     if 'show_in_top' not in user_data:
                         user_data['show_in_top'] = True
+                    if 'takes_timestamps' not in user_data:
+                        user_data['takes_timestamps'] = []
                 
                 logger.info(f"Loaded {len(users)} users from file")
     except Exception as e:
@@ -79,6 +86,70 @@ def save_data():
     except Exception as e:
         logger.error(f"Error saving data: {e}")
 
+# Takes management functions
+def get_takes_count_last_24h(user_id: int) -> int:
+    """Get count of takes sent in last 24 hours."""
+    if user_id not in users:
+        return 0
+    
+    now = datetime.now()
+    cutoff = now - timedelta(hours=24)
+    
+    # Фильтруем старые записи
+    valid_timestamps = []
+    for ts_str in users[user_id].get('takes_timestamps', []):
+        try:
+            ts = datetime.fromisoformat(ts_str)
+            if ts > cutoff:
+                valid_timestamps.append(ts_str)
+        except:
+            continue
+    
+    users[user_id]['takes_timestamps'] = valid_timestamps
+    return len(valid_timestamps)
+
+def add_take_timestamp(user_id: int) -> None:
+    """Record a take submission."""
+    if user_id not in users:
+        return
+    
+    if 'takes_timestamps' not in users[user_id]:
+        users[user_id]['takes_timestamps'] = []
+    
+    users[user_id]['takes_timestamps'].append(datetime.now().isoformat())
+    save_data()
+
+def can_send_take(user_id: int) -> Tuple[bool, int]:
+    """Check if user can send a take. Returns (can_send, remaining_count)."""
+    count = get_takes_count_last_24h(user_id)
+    remaining = MAX_TAKES_PER_DAY - count
+    return remaining > 0, remaining
+
+def get_time_until_reset(user_id: int) -> str:
+    """Get time until next take is available."""
+    if user_id not in users:
+        return "неизвестно"
+    
+    timestamps = users[user_id].get('takes_timestamps', [])
+    if not timestamps:
+        return "сейчас"
+    
+    try:
+        oldest = min(datetime.fromisoformat(ts) for ts in timestamps)
+        reset_time = oldest + timedelta(hours=24)
+        now = datetime.now()
+        
+        if reset_time <= now:
+            return "сейчас"
+        
+        diff = reset_time - now
+        hours = diff.seconds // 3600
+        minutes = (diff.seconds % 3600) // 60
+        
+        return f"{hours}ч {minutes}мин"
+    except:
+        return "неизвестно"
+
 # Keyboard builders
 def build_main_menu() -> InlineKeyboardMarkup:
     """Create the main menu keyboard."""
@@ -90,6 +161,9 @@ def build_main_menu() -> InlineKeyboardMarkup:
     builder.row(
         InlineKeyboardButton(text="Топ", callback_data="top"),
         InlineKeyboardButton(text="Мой баланс", callback_data="balance")
+    )
+    builder.row(
+        InlineKeyboardButton(text="📝 Отправить тейк", callback_data="send_take")
     )
     return builder.as_markup()
 
@@ -115,26 +189,22 @@ def build_admin_menu(user_id: int = None) -> InlineKeyboardMarkup:
     """Create admin menu keyboard with permissions check."""
     builder = InlineKeyboardBuilder()
     
-    # Проверяем права на списание и сброс топа (только для главного админа)
     if user_id == MAIN_ADMIN_ID:
         builder.row(
             InlineKeyboardButton(text="Скрыть всех из топа", callback_data="admin_reset_top"),
             InlineKeyboardButton(text="Списать луны", callback_data="admin_deduct_moons")
         )
     
-    # Кнопки доступные всем админам
     if user_id in ADMIN_IDS:
         builder.row(
             InlineKeyboardButton(text="Список пользователей", callback_data="admin_list_users"),
             InlineKeyboardButton(text="📊 Мой баланс", callback_data="admin_balance")
         )
     
-    # Только для главного админа - кнопка бесконечного баланса
     if user_id == MAIN_ADMIN_ID:
         builder.row(
             InlineKeyboardButton(text="∞ Бесконечный баланс", callback_data="admin_infinite_balance")
         )
-    # Только для обычных админов - кнопка обычного баланса
     elif user_id in ADMIN_IDS and user_id != MAIN_ADMIN_ID:
         builder.row(
             InlineKeyboardButton(text="🔁 Обычный баланс", callback_data="admin_normal_balance")
@@ -144,6 +214,12 @@ def build_admin_menu(user_id: int = None) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="👤 Обычный режим", callback_data="user_mode")
     )
     
+    return builder.as_markup()
+
+def build_cancel_keyboard() -> InlineKeyboardMarkup:
+    """Create cancel keyboard."""
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_take"))
     return builder.as_markup()
 
 # User management functions
@@ -159,7 +235,6 @@ def register_user(user: types.User) -> None:
     user_id_to_username[uid] = username
 
     if uid not in users:
-        # Определяем баланс: бесконечный только для главного админа
         is_admin = uid in ADMIN_IDS
         moons = float('inf') if uid == MAIN_ADMIN_ID else (ADMIN_STARTING_BALANCE if is_admin else 0)
         
@@ -169,23 +244,23 @@ def register_user(user: types.User) -> None:
             "moons": moons,
             "quiz_passed": False,
             "is_admin": is_admin,
-            "show_in_top": True  # Новый пользователь показывается в топе
+            "show_in_top": True,
+            "takes_timestamps": []
         }
         save_data()
     else:
-        # При повторном /start показываем пользователя в топе
         users[uid]["show_in_top"] = True
+        
+        if 'takes_timestamps' not in users[uid]:
+            users[uid]['takes_timestamps'] = []
         
         if users[uid]["username"] != username:
             users[uid]["username"] = username
-            save_data()
-        else:
-            save_data()  # Сохраняем даже если только show_in_top изменился
         
-        # Обновляем статус админа, если нужно
+        save_data()
+        
         if uid in ADMIN_IDS and not users[uid]["is_admin"]:
             users[uid]["is_admin"] = True
-            # Устанавливаем соответствующий баланс
             if uid == MAIN_ADMIN_ID:
                 users[uid]["moons"] = float('inf')
             else:
@@ -276,6 +351,74 @@ def set_admin_infinite_balance(admin_id: int) -> None:
 # Загружаем данные при старте
 load_data()
 
+# ====================== ФУНКЦИЯ ПЕРЕСЫЛКИ ТЕЙКА ======================
+async def forward_take_to_channel(message: types.Message) -> bool:
+    """Forward a take message to the channel. Returns True if successful."""
+    try:
+        if message.photo:
+            # Фото с подписью
+            await bot.send_photo(
+                TAKES_CHANNEL,
+                photo=message.photo[-1].file_id,
+                caption=message.caption
+            )
+        elif message.video:
+            # Видео с подписью
+            await bot.send_video(
+                TAKES_CHANNEL,
+                video=message.video.file_id,
+                caption=message.caption
+            )
+        elif message.document:
+            # Документ с подписью
+            await bot.send_document(
+                TAKES_CHANNEL,
+                document=message.document.file_id,
+                caption=message.caption
+            )
+        elif message.animation:
+            # GIF с подписью
+            await bot.send_animation(
+                TAKES_CHANNEL,
+                animation=message.animation.file_id,
+                caption=message.caption
+            )
+        elif message.voice:
+            # Голосовое сообщение
+            await bot.send_voice(
+                TAKES_CHANNEL,
+                voice=message.voice.file_id,
+                caption=message.caption
+            )
+        elif message.audio:
+            # Аудио
+            await bot.send_audio(
+                TAKES_CHANNEL,
+                audio=message.audio.file_id,
+                caption=message.caption
+            )
+        elif message.sticker:
+            # Стикер
+            await bot.send_sticker(TAKES_CHANNEL, sticker=message.sticker.file_id)
+        else:
+            # Текстовое сообщение
+            await bot.send_message(TAKES_CHANNEL, message.text)
+        
+        return True
+    except Exception as e:
+        logger.error(f"Error forwarding take to channel: {e}")
+        return False
+
+def message_contains_take_hashtag(message: types.Message) -> bool:
+    """Check if message contains #тейк hashtag."""
+    text = ""
+    if message.text:
+        text = message.text.lower()
+    elif message.caption:
+        text = message.caption.lower()
+    
+    return "#тейк" in text
+
 # ====================== КОМАНДЫ ДЛЯ ОТЛАДКИ ======================
 @dp.message(Command("myid"))
 async def cmd_myid(message: types.Message) -> None:
@@ -283,11 +426,13 @@ async def cmd_myid(message: types.Message) -> None:
     uid = message.from_user.id
     if uid in users:
         user_data = users[uid]
+        can_send, remaining = can_send_take(uid)
         await message.answer(f"Ваш ID: {uid}\n"
                             f"Username: @{user_data['username']}\n"
                             f"Баланс: {user_data['moons']}\n"
                             f"Показывается в топе: {user_data.get('show_in_top', True)}\n"
-                            f"Админ: {user_data['is_admin']}")
+                            f"Админ: {user_data['is_admin']}\n"
+                            f"Тейков осталось: {remaining}/{MAX_TAKES_PER_DAY}")
     else:
         await message.answer(f"Ваш ID: {uid}\n"
                             f"Вы не зарегистрированы!")
@@ -300,6 +445,7 @@ async def cmd_debug(message: types.Message) -> None:
         user_data = users[uid]
         visible_in_top = sum(1 for u in users.values() if u.get('show_in_top', True))
         total_users = len(users)
+        can_send, remaining = can_send_take(uid)
         
         await message.answer(f"📊 Debug info:\n"
                             f"ID: {uid}\n"
@@ -308,6 +454,7 @@ async def cmd_debug(message: types.Message) -> None:
                             f"Показывается в топе: {user_data.get('show_in_top', True)}\n"
                             f"Админ: {user_data['is_admin']}\n"
                             f"Викторина пройдена: {user_data['quiz_passed']}\n"
+                            f"Тейков осталось: {remaining}/{MAX_TAKES_PER_DAY}\n"
                             f"Всего пользователей: {total_users}\n"
                             f"Показывается в топе: {visible_in_top}")
     else:
@@ -320,7 +467,6 @@ async def cmd_start(message: types.Message) -> None:
     """Handle the /start command."""
     register_user(message.from_user)
     
-    # Проверяем, является ли пользователь админом
     if message.from_user.id in ADMIN_IDS:
         await message.answer(
             "👋 Добро пожаловать, администратор! Выберите режим:",
@@ -354,13 +500,135 @@ async def cancel_handler(message: types.Message, state: FSMContext) -> None:
     else:
         await message.answer("Действие отменено.", reply_markup=build_main_menu())
 
+# ====================== ОБРАБОТЧИКИ ТЕЙКОВ ======================
+@dp.callback_query(F.data == "send_take")
+async def send_take_start(callback: types.CallbackQuery, state: FSMContext) -> None:
+    """Start the take submission process."""
+    uid = callback.from_user.id
+    
+    if uid not in users:
+        register_user(callback.from_user)
+    
+    can_send, remaining = can_send_take(uid)
+    
+    if not can_send:
+        time_until = get_time_until_reset(uid)
+        await callback.answer(
+            f"❌ Вы исчерпали лимит тейков на сегодня!\n"
+            f"Следующий тейк будет доступен через: {time_until}",
+            show_alert=True
+        )
+        return
+    
+    await callback.message.edit_text(
+        f"📝 **Отправка тейка**\n\n"
+        f"Отправьте ваш тейк (текст, фото, видео и т.д.)\n"
+        f"⚠️ **Обязательно добавьте #тейк в сообщение!**\n\n"
+        f"📊 Осталось тейков сегодня: {remaining}/{MAX_TAKES_PER_DAY}",
+        reply_markup=build_cancel_keyboard(),
+        parse_mode="Markdown"
+    )
+    await state.set_state(TakeStates.WaitingTake)
+    await callback.answer()
+
+@dp.callback_query(F.data == "cancel_take")
+async def cancel_take(callback: types.CallbackQuery, state: FSMContext) -> None:
+    """Cancel take submission."""
+    await state.clear()
+    await callback.message.edit_text("Выбор действия:", reply_markup=build_main_menu())
+    await callback.answer("Отправка тейка отменена")
+
+@dp.message(TakeStates.WaitingTake)
+async def process_take(message: types.Message, state: FSMContext) -> None:
+    """Process the take submission."""
+    uid = message.from_user.id
+    
+    # Проверяем лимит ещё раз
+    can_send, remaining = can_send_take(uid)
+    if not can_send:
+        time_until = get_time_until_reset(uid)
+        await message.answer(
+            f"❌ Вы исчерпали лимит тейков!\n"
+            f"Следующий тейк будет доступен через: {time_until}",
+            reply_markup=build_main_menu()
+        )
+        await state.clear()
+        return
+    
+    # Проверяем наличие хештега #тейк
+    if not message_contains_take_hashtag(message):
+        await message.answer(
+            "⚠️ Добавьте #тейк в конец сообщения\n\n"
+            "Отправьте сообщение ещё раз с хештегом #тейк",
+            reply_markup=build_cancel_keyboard()
+        )
+        return
+    
+    # Пересылаем в канал
+    success = await forward_take_to_channel(message)
+    
+    if success:
+        add_take_timestamp(uid)
+        _, new_remaining = can_send_take(uid)
+        
+        await message.answer(
+            f"✅ Ваш тейк успешно отправлен в канал!\n\n"
+            f"📊 Осталось тейков сегодня: {new_remaining}/{MAX_TAKES_PER_DAY}",
+            reply_markup=build_main_menu()
+        )
+    else:
+        await message.answer(
+            "❌ Ошибка при отправке тейка. Попробуйте позже.",
+            reply_markup=build_main_menu()
+        )
+    
+    await state.clear()
+
+# ====================== АВТОМАТИЧЕСКАЯ ПЕРЕСЫЛКА СООБЩЕНИЙ С #тейк ======================
+@dp.message(F.text.contains("#тейк") | F.caption.contains("#тейк"))
+async def auto_forward_take(message: types.Message, state: FSMContext) -> None:
+    """Automatically forward messages containing #тейк to the channel."""
+    # Проверяем, что это не состояние ожидания тейка (чтобы не дублировать)
+    current_state = await state.get_state()
+    if current_state == TakeStates.WaitingTake:
+        return  # Пропускаем, это обработается в process_take
+    
+    uid = message.from_user.id
+    
+    # Регистрируем пользователя если нужно
+    if uid not in users:
+        register_user(message.from_user)
+    
+    # Проверяем лимит
+    can_send, remaining = can_send_take(uid)
+    if not can_send:
+        time_until = get_time_until_reset(uid)
+        await message.answer(
+            f"❌ Вы исчерпали лимит тейков на сегодня ({MAX_TAKES_PER_DAY} тейка в 24 часа)!\n"
+            f"Следующий тейк будет доступен через: {time_until}"
+        )
+        return
+    
+    # Пересылаем в канал
+    success = await forward_take_to_channel(message)
+    
+    if success:
+        add_take_timestamp(uid)
+        _, new_remaining = can_send_take(uid)
+        await message.answer(
+            f"✅ Ваш тейк автоматически отправлен в канал!\n"
+            f"📊 Осталось тейков сегодня: {new_remaining}/{MAX_TAKES_PER_DAY}"
+        )
+    else:
+        await message.answer("❌ Ошибка при отправке тейка. Попробуйте позже.")
+
 # Admin callback handlers
 @dp.callback_query(F.data == "admin_reset_top")
 async def admin_reset_top(callback: types.CallbackQuery) -> None:
     """Hide all users from top (reset top)."""
     if callback.from_user.id == MAIN_ADMIN_ID:
         hidden_count = reset_top()
-        await callback.answer(f"Топ сброшен! {hidden_count} пользователей скрыто из топа. Они появятся снова после /start", show_alert=True)
+        await callback.answer(f"Топ сброшен! {hidden_count} пользователей скрыто из топа.", show_alert=True)
         await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu(callback.from_user.id))
     else:
         await callback.answer("Доступ запрещен", show_alert=True)
@@ -372,10 +640,9 @@ async def admin_list_users(callback: types.CallbackQuery) -> None:
         user_list = []
         for uid, user_data in users.items():
             if uid != MAIN_ADMIN_ID:
-                # Используем имя, если нет юзернейма
                 display_name = f"@{user_data['username']}" if not user_data['username'].startswith('user') else user_data['name']
                 show_in_top = user_data.get('show_in_top', True)
-                status = "✅ В топе" if show_in_top else "❌ Скрыт"
+                status = "✅" if show_in_top else "❌"
                 user_list.append((display_name, user_data["moons"], user_data["name"], status))
         
         if not user_list:
@@ -385,15 +652,10 @@ async def admin_list_users(callback: types.CallbackQuery) -> None:
         
         text = "📊 Список всех пользователей:\n\n"
         for i, (display_name, moons, full_name, status) in enumerate(user_list, 1):
-            text += f"{i}. {display_name}"
-            if not display_name.startswith('@'):  # Добавляем имя если нет юзернейма
+            text += f"{i}. {status} {display_name}"
+            if not display_name.startswith('@'):
                 text += f" ({full_name})"
-            text += f" - {moons if moons != float('inf') else '∞'} 🌗 - {status}\n"
-        
-        visible_count = sum(1 for u in users.values() if u.get('show_in_top', True) and list(users.keys())[list(users.values()).index(u)] != MAIN_ADMIN_ID)
-        text += f"\nВсего пользователей: {len(user_list)}\n"
-        text += f"Показывается в топе: {visible_count}\n"
-        text += f"Скрыто из топа: {len(user_list) - visible_count}"
+            text += f" - {moons if moons != float('inf') else '∞'} 🌗\n"
         
         await callback.message.edit_text(text, reply_markup=build_admin_menu(callback.from_user.id))
         await callback.answer()
@@ -476,7 +738,6 @@ async def admin_receive_amount(message: types.Message, state: FSMContext) -> Non
 
     await state.clear()
 
-# Баланс админа
 @dp.callback_query(F.data == "admin_balance")
 async def admin_balance_handler(callback: types.CallbackQuery) -> None:
     """Show admin balance."""
@@ -645,7 +906,6 @@ async def transfer_start(callback: types.CallbackQuery, state: FSMContext) -> No
     visible_users = []
     for uid, u in users.items():
         if uid != MAIN_ADMIN_ID and uid != callback.from_user.id:
-            # Используем имя, если нет юзернейма
             display_name = f"@{u['username']}" if not u['username'].startswith('user') else f"{u['name']} (ID: {uid})"
             visible_users.append((display_name, u['username']))
     
@@ -665,18 +925,15 @@ async def receive_receiver(message: types.Message, state: FSMContext) -> None:
     receiver_input = message.text.strip().lstrip('@').lower()
     sender_uid = message.from_user.id
 
-    # Find receiver by username or ID
     receiver_uid = None
     
-    # Попробуем найти по ID
     try:
         potential_uid = int(receiver_input)
         if potential_uid in users and potential_uid != MAIN_ADMIN_ID:
             receiver_uid = potential_uid
     except ValueError:
-        pass  # Не число, ищем по username
+        pass
     
-    # Если не нашли по ID, ищем по username
     if receiver_uid is None:
         for uid, data in users.items():
             if (data["username"].lower() == receiver_input or 
@@ -736,18 +993,16 @@ async def receive_amount(message: types.Message, state: FSMContext) -> None:
 
 @dp.callback_query(F.data == "top")
 async def show_top(callback: types.CallbackQuery) -> None:
-    """Show top users by moon balance (only those who are visible)."""
+    """Show top users by moon balance."""
     filtered = []
     for uid, u in users.items():
-        if uid != MAIN_ADMIN_ID and u.get("show_in_top", True):  # Только тех, кто показывается в топе
-            # Используем имя, если нет юзернейма
+        if uid != MAIN_ADMIN_ID and u.get("show_in_top", True):
             display_name = f"@{u['username']}" if not u['username'].startswith('user') else u['name']
             filtered.append((display_name, u["moons"]))
     
     if not filtered:
         await callback.message.edit_text(
-            "Топ пуст! Пользователи будут появляться здесь после того как нажмут /start.\n\n"
-            "Администратор может сбросить топ, чтобы скрыть всех пользователей.",
+            "Топ пуст! Пользователи будут появляться здесь после того как нажмут /start.",
             reply_markup=build_main_menu()
         )
         await callback.answer()
@@ -759,15 +1014,6 @@ async def show_top(callback: types.CallbackQuery) -> None:
     text = "🏆 Топ 10 по лунам 🌗:\n"
     for i, (display_name, moons) in enumerate(top10, 1):
         text += f"{i}. {display_name} - {moons if moons != float('inf') else '∞'} 🌗\n"
-    
-    visible_count = len(filtered)
-    total_count = len([u for uid, u in users.items() if uid != MAIN_ADMIN_ID])
-    hidden_count = total_count - visible_count
-    
-    text += f"\n📊 Статистика:\n"
-    text += f"• Показывается в топе: {visible_count}\n"
-    text += f"• Скрыто из топа: {hidden_count}\n"
-    text += f"• Всего пользователей: {total_count}"
 
     await callback.message.edit_text(text, reply_markup=build_main_menu())
     await callback.answer()
@@ -777,15 +1023,17 @@ async def show_balance(callback: types.CallbackQuery) -> None:
     """Show user's moon balance."""
     uid = callback.from_user.id
     moons = get_user_balance(uid)
+    can_send, remaining = can_send_take(uid)
     
-    # Проверяем, показывается ли пользователь в топе
     if uid in users:
         show_in_top = users[uid].get("show_in_top", True)
-        status = "✅ Вы показываетесь в топе" if show_in_top else "❌ Вы скрыты из топа (нажмите /start чтобы появиться)"
+        status = "✅ Вы показываетесь в топе" if show_in_top else "❌ Вы скрыты из топа (нажмите /start)"
     else:
         status = ""
     
-    text = f"Ваш баланс - {'∞' if moons == float('inf') else moons} 🌗\n{status}"
+    text = f"Ваш баланс - {'∞' if moons == float('inf') else moons} 🌗\n"
+    text += f"📝 Тейков осталось: {remaining}/{MAX_TAKES_PER_DAY}\n"
+    text += status
 
     await callback.message.edit_text(text, reply_markup=build_main_menu())
     await callback.answer()
