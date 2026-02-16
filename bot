@@ -1,6 +1,8 @@
 import asyncio
 import logging
+import re
 from typing import Dict, Any, Union, List, Tuple
+from html import escape as html_escape
 import json
 import os
 from datetime import datetime, timedelta
@@ -9,7 +11,7 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, User
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # Configure logging
@@ -21,8 +23,8 @@ TOKEN = "8216288128:AAHWCLpy-tPcFKjbpM2hUN1xt6P850mi5qE"
 MAIN_ADMIN_ID = 6098677257
 ADMIN_IDS = {6098677257, 8092280284, 8366347415}
 CHANNEL_URL = "https://t.me/WINGSOFFIRECHANNEL"
-TAKES_CHANNEL = "@WINGSOFFIRECHANNEL"  # Канал для пересылки тейков
-MAX_TAKES_PER_DAY = 3  # Максимум тейков в 24 часа
+TAKES_CHANNEL = "@WINGSOFFIRECHANNEL"
+MAX_TAKES_PER_DAY = 3
 QUIZ_REWARD = 50
 DATA_FILE = "users_data.json"
 ADMIN_STARTING_BALANCE = 100
@@ -52,6 +54,53 @@ class TakeStates(StatesGroup):
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+# ====================== ЦЕНЗУРА МАТА ======================
+
+_PFX = r'(?:за|на|по|от|об|до|у|о|вы|пере|при|рас|раз|про|недо|пре|с|ис|из)?'
+_PFX_EB = r'(?:за|на|по|от|отъ|об|объ|до|у|о|вы|пере|при|рас|раз|про|недо|пре|съ|ис|из|долбо)?'
+
+_PROFANITY_RE = re.compile(
+    r'\b(?:'
+    + _PFX + r'ху[йяеёюи]\w*'
+    r'|' + _PFX + r'пизд\w*'
+    r'|' + _PFX_EB + r'[её]б\w*'
+    r'|бля[дт]\w*'
+    r'|сук[аиуе]\w*'
+    r'|суч[каеьи]\w*'
+    r'|муда[кч]\w*|мудил\w*|мудозвон\w*'
+    r'|пидор\w*|пидар\w*|пидр\w*|педик\w*|педераст\w*'
+    r'|шлюх\w*|гандон\w*|залуп\w*|дроч\w*|манд[аоуеёяи]\w*'
+    r')\b',
+    re.IGNORECASE | re.UNICODE
+)
+
+
+def censor_profanity(text: str) -> Tuple[str, bool]:
+    """Заменяет русский мат на HTML-спойлеры <tg-spoiler>.
+
+    Возвращает (обработанный_текст, содержит_мат).
+    Если мат найден, весь текст экранируется для HTML,
+    а матерные слова оборачиваются в <tg-spoiler>.
+    """
+    if not text:
+        return text, False
+
+    matches = list(_PROFANITY_RE.finditer(text))
+    if not matches:
+        return text, False
+
+    parts: list = []
+    last = 0
+    for m in matches:
+        parts.append(html_escape(text[last:m.start()]))
+        parts.append(f'<tg-spoiler>{html_escape(m.group())}</tg-spoiler>')
+        last = m.end()
+    parts.append(html_escape(text[last:]))
+
+    return ''.join(parts), True
+
+# ====================== КОНЕЦ ЦЕНЗУРЫ ======================
+
 # Data persistence functions
 def load_data():
     """Load user data from file"""
@@ -62,16 +111,17 @@ def load_data():
                 data = json.load(f)
                 users = {int(k): v for k, v in data.get('users', {}).items()}
                 user_id_to_username = {int(k): v for k, v in data.get('user_id_to_username', {}).items()}
-                
+
                 for user_data in users.values():
                     if 'show_in_top' not in user_data:
                         user_data['show_in_top'] = True
                     if 'takes_timestamps' not in user_data:
                         user_data['takes_timestamps'] = []
-                
+
                 logger.info(f"Loaded {len(users)} users from file")
     except Exception as e:
         logger.error(f"Error loading data: {e}")
+
 
 def save_data():
     """Save user data to file"""
@@ -86,16 +136,16 @@ def save_data():
     except Exception as e:
         logger.error(f"Error saving data: {e}")
 
+
 # Takes management functions
 def get_takes_count_last_24h(user_id: int) -> int:
     """Get count of takes sent in last 24 hours."""
     if user_id not in users:
         return 0
-    
+
     now = datetime.now()
     cutoff = now - timedelta(hours=24)
-    
-    # Фильтруем старые записи
+
     valid_timestamps = []
     for ts_str in users[user_id].get('takes_timestamps', []):
         try:
@@ -104,20 +154,22 @@ def get_takes_count_last_24h(user_id: int) -> int:
                 valid_timestamps.append(ts_str)
         except:
             continue
-    
+
     users[user_id]['takes_timestamps'] = valid_timestamps
     return len(valid_timestamps)
+
 
 def add_take_timestamp(user_id: int) -> None:
     """Record a take submission."""
     if user_id not in users:
         return
-    
+
     if 'takes_timestamps' not in users[user_id]:
         users[user_id]['takes_timestamps'] = []
-    
+
     users[user_id]['takes_timestamps'].append(datetime.now().isoformat())
     save_data()
+
 
 def can_send_take(user_id: int) -> Tuple[bool, int]:
     """Check if user can send a take. Returns (can_send, remaining_count)."""
@@ -125,30 +177,32 @@ def can_send_take(user_id: int) -> Tuple[bool, int]:
     remaining = MAX_TAKES_PER_DAY - count
     return remaining > 0, remaining
 
+
 def get_time_until_reset(user_id: int) -> str:
     """Get time until next take is available."""
     if user_id not in users:
         return "неизвестно"
-    
+
     timestamps = users[user_id].get('takes_timestamps', [])
     if not timestamps:
         return "сейчас"
-    
+
     try:
         oldest = min(datetime.fromisoformat(ts) for ts in timestamps)
         reset_time = oldest + timedelta(hours=24)
         now = datetime.now()
-        
+
         if reset_time <= now:
             return "сейчас"
-        
+
         diff = reset_time - now
         hours = diff.seconds // 3600
         minutes = (diff.seconds % 3600) // 60
-        
+
         return f"{hours}ч {minutes}мин"
     except:
         return "неизвестно"
+
 
 # Keyboard builders
 def build_main_menu() -> InlineKeyboardMarkup:
@@ -167,6 +221,7 @@ def build_main_menu() -> InlineKeyboardMarkup:
     )
     return builder.as_markup()
 
+
 def build_earn_menu() -> InlineKeyboardMarkup:
     """Create the earn menu keyboard."""
     builder = InlineKeyboardBuilder()
@@ -175,6 +230,7 @@ def build_earn_menu() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="Викторина", callback_data="quiz_start")
     )
     return builder.as_markup()
+
 
 def build_admin_switch_menu() -> InlineKeyboardMarkup:
     """Create menu for switching between admin and user modes."""
@@ -185,22 +241,23 @@ def build_admin_switch_menu() -> InlineKeyboardMarkup:
     )
     return builder.as_markup()
 
+
 def build_admin_menu(user_id: int = None) -> InlineKeyboardMarkup:
     """Create admin menu keyboard with permissions check."""
     builder = InlineKeyboardBuilder()
-    
+
     if user_id == MAIN_ADMIN_ID:
         builder.row(
             InlineKeyboardButton(text="Скрыть всех из топа", callback_data="admin_reset_top"),
             InlineKeyboardButton(text="Списать луны", callback_data="admin_deduct_moons")
         )
-    
+
     if user_id in ADMIN_IDS:
         builder.row(
             InlineKeyboardButton(text="Список пользователей", callback_data="admin_list_users"),
             InlineKeyboardButton(text="📊 Мой баланс", callback_data="admin_balance")
         )
-    
+
     if user_id == MAIN_ADMIN_ID:
         builder.row(
             InlineKeyboardButton(text="∞ Бесконечный баланс", callback_data="admin_infinite_balance")
@@ -209,12 +266,13 @@ def build_admin_menu(user_id: int = None) -> InlineKeyboardMarkup:
         builder.row(
             InlineKeyboardButton(text="🔁 Обычный баланс", callback_data="admin_normal_balance")
         )
-    
+
     builder.row(
         InlineKeyboardButton(text="👤 Обычный режим", callback_data="user_mode")
     )
-    
+
     return builder.as_markup()
+
 
 def build_cancel_keyboard() -> InlineKeyboardMarkup:
     """Create cancel keyboard."""
@@ -222,22 +280,23 @@ def build_cancel_keyboard() -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_take"))
     return builder.as_markup()
 
+
 # User management functions
-def register_user(user: types.User) -> None:
+def register_user(user: User) -> None:
     """Register a new user or update existing user data."""
     uid = user.id
     username = user.username or f"user{uid}"
     name = user.full_name
-    
+
     if uid in user_id_to_username and user_id_to_username[uid] != username:
         logger.info(f"Username changed for user {uid}: {user_id_to_username[uid]} -> {username}")
-    
+
     user_id_to_username[uid] = username
 
     if uid not in users:
         is_admin = uid in ADMIN_IDS
         moons = float('inf') if uid == MAIN_ADMIN_ID else (ADMIN_STARTING_BALANCE if is_admin else 0)
-        
+
         users[uid] = {
             "username": username,
             "name": name,
@@ -250,15 +309,15 @@ def register_user(user: types.User) -> None:
         save_data()
     else:
         users[uid]["show_in_top"] = True
-        
+
         if 'takes_timestamps' not in users[uid]:
             users[uid]['takes_timestamps'] = []
-        
+
         if users[uid]["username"] != username:
             users[uid]["username"] = username
-        
+
         save_data()
-        
+
         if uid in ADMIN_IDS and not users[uid]["is_admin"]:
             users[uid]["is_admin"] = True
             if uid == MAIN_ADMIN_ID:
@@ -267,15 +326,18 @@ def register_user(user: types.User) -> None:
                 users[uid]["moons"] = ADMIN_STARTING_BALANCE
             save_data()
 
+
 def get_user_balance(user_id: int) -> Union[float, int]:
     """Get user's moon balance."""
     return users.get(user_id, {}).get("moons", 0)
+
 
 def add_moons(user_id: int, amount: int) -> None:
     """Add moons to user's balance if they don't have infinite moons."""
     if user_id in users and users[user_id]["moons"] != float('inf'):
         users[user_id]["moons"] += amount
         save_data()
+
 
 def transfer_moons(sender_id: int, receiver_id: int, amount: int) -> bool:
     """Transfer moons from sender to receiver."""
@@ -296,33 +358,36 @@ def transfer_moons(sender_id: int, receiver_id: int, amount: int) -> bool:
     save_data()
     return True
 
+
 def deduct_moons(user_id: int, amount: int) -> bool:
     """Deduct moons from user's balance."""
     if user_id not in users:
         return False
-    
+
     if users[user_id]["moons"] == float('inf'):
         return False
-    
+
     if users[user_id]["moons"] < amount:
         users[user_id]["moons"] = 0
     else:
         users[user_id]["moons"] -= amount
-    
+
     save_data()
     return True
 
-def reset_top() -> None:
+
+def reset_top() -> int:
     """Hide all users from top (except admin)."""
     hidden_count = 0
     for uid, user_data in users.items():
         if uid != MAIN_ADMIN_ID and user_data.get("show_in_top", True):
             user_data["show_in_top"] = False
             hidden_count += 1
-    
+
     save_data()
     logger.info(f"Top has been reset: {hidden_count} users hidden from top")
     return hidden_count
+
 
 def get_all_users() -> List[Tuple[str, Union[float, int], bool]]:
     """Get list of all users with their moon balances and visibility status."""
@@ -330,9 +395,10 @@ def get_all_users() -> List[Tuple[str, Union[float, int], bool]]:
     for uid, user_data in users.items():
         if uid != MAIN_ADMIN_ID:
             user_list.append((user_data["username"], user_data["moons"], user_data.get("show_in_top", True)))
-    
+
     user_list.sort(key=lambda x: x[1] if x[1] != float('inf') else 0, reverse=True)
     return user_list
+
 
 def set_admin_normal_balance(admin_id: int) -> None:
     """Set normal balance for admin (only for non-main admins)."""
@@ -341,6 +407,7 @@ def set_admin_normal_balance(admin_id: int) -> None:
         save_data()
         logger.info(f"Admin {admin_id} now has normal balance: {ADMIN_STARTING_BALANCE}")
 
+
 def set_admin_infinite_balance(admin_id: int) -> None:
     """Set infinite balance for admin (only for main admin)."""
     if admin_id in users and admin_id == MAIN_ADMIN_ID:
@@ -348,66 +415,97 @@ def set_admin_infinite_balance(admin_id: int) -> None:
         save_data()
         logger.info(f"Main admin {admin_id} now has infinite balance")
 
+
 # Загружаем данные при старте
 load_data()
 
-# ====================== ФУНКЦИЯ ПЕРЕСЫЛКИ ТЕЙКА ======================
+
+# ====================== ФУНКЦИЯ ПЕРЕСЫЛКИ ТЕЙКА С ЦЕНЗУРОЙ ======================
 async def forward_take_to_channel(message: types.Message) -> bool:
-    """Forward a take message to the channel. Returns True if successful."""
+    """Forward a take message to the channel with profanity censorship.
+
+    Текст / подпись прогоняется через censor_profanity().
+    Если мат найден — отправляем с parse_mode='HTML',
+    матерные слова обёрнуты в <tg-spoiler>.
+    """
     try:
         if message.photo:
-            # Фото с подписью
+            raw_caption = message.caption or ""
+            censored_caption, has_profanity = censor_profanity(raw_caption)
             await bot.send_photo(
                 TAKES_CHANNEL,
                 photo=message.photo[-1].file_id,
-                caption=message.caption
+                caption=censored_caption if has_profanity else raw_caption,
+                parse_mode="HTML" if has_profanity else None,
             )
+
         elif message.video:
-            # Видео с подписью
+            raw_caption = message.caption or ""
+            censored_caption, has_profanity = censor_profanity(raw_caption)
             await bot.send_video(
                 TAKES_CHANNEL,
                 video=message.video.file_id,
-                caption=message.caption
+                caption=censored_caption if has_profanity else raw_caption,
+                parse_mode="HTML" if has_profanity else None,
             )
+
         elif message.document:
-            # Документ с подписью
+            raw_caption = message.caption or ""
+            censored_caption, has_profanity = censor_profanity(raw_caption)
             await bot.send_document(
                 TAKES_CHANNEL,
                 document=message.document.file_id,
-                caption=message.caption
+                caption=censored_caption if has_profanity else raw_caption,
+                parse_mode="HTML" if has_profanity else None,
             )
+
         elif message.animation:
-            # GIF с подписью
+            raw_caption = message.caption or ""
+            censored_caption, has_profanity = censor_profanity(raw_caption)
             await bot.send_animation(
                 TAKES_CHANNEL,
                 animation=message.animation.file_id,
-                caption=message.caption
+                caption=censored_caption if has_profanity else raw_caption,
+                parse_mode="HTML" if has_profanity else None,
             )
+
         elif message.voice:
-            # Голосовое сообщение
+            raw_caption = message.caption or ""
+            censored_caption, has_profanity = censor_profanity(raw_caption)
             await bot.send_voice(
                 TAKES_CHANNEL,
                 voice=message.voice.file_id,
-                caption=message.caption
+                caption=censored_caption if has_profanity else raw_caption,
+                parse_mode="HTML" if has_profanity else None,
             )
+
         elif message.audio:
-            # Аудио
+            raw_caption = message.caption or ""
+            censored_caption, has_profanity = censor_profanity(raw_caption)
             await bot.send_audio(
                 TAKES_CHANNEL,
                 audio=message.audio.file_id,
-                caption=message.caption
+                caption=censored_caption if has_profanity else raw_caption,
+                parse_mode="HTML" if has_profanity else None,
             )
+
         elif message.sticker:
-            # Стикер
             await bot.send_sticker(TAKES_CHANNEL, sticker=message.sticker.file_id)
+
         else:
-            # Текстовое сообщение
-            await bot.send_message(TAKES_CHANNEL, message.text)
-        
+            raw_text = message.text or ""
+            censored_text, has_profanity = censor_profanity(raw_text)
+            await bot.send_message(
+                TAKES_CHANNEL,
+                censored_text if has_profanity else raw_text,
+                parse_mode="HTML" if has_profanity else None,
+            )
+
         return True
     except Exception as e:
         logger.error(f"Error forwarding take to channel: {e}")
         return False
+
 
 def message_contains_take_hashtag(message: types.Message) -> bool:
     """Check if message contains #тейк hashtag."""
@@ -416,8 +514,9 @@ def message_contains_take_hashtag(message: types.Message) -> bool:
         text = message.text.lower()
     elif message.caption:
         text = message.caption.lower()
-    
+
     return "#тейк" in text
+
 
 # ====================== КОМАНДЫ ДЛЯ ОТЛАДКИ ======================
 @dp.message(Command("myid"))
@@ -427,15 +526,17 @@ async def cmd_myid(message: types.Message) -> None:
     if uid in users:
         user_data = users[uid]
         can_send, remaining = can_send_take(uid)
-        await message.answer(f"Ваш ID: {uid}\n"
-                            f"Username: @{user_data['username']}\n"
-                            f"Баланс: {user_data['moons']}\n"
-                            f"Показывается в топе: {user_data.get('show_in_top', True)}\n"
-                            f"Админ: {user_data['is_admin']}\n"
-                            f"Тейков осталось: {remaining}/{MAX_TAKES_PER_DAY}")
+        await message.answer(
+            f"Ваш ID: {uid}\n"
+            f"Username: @{user_data['username']}\n"
+            f"Баланс: {user_data['moons']}\n"
+            f"Показывается в топе: {user_data.get('show_in_top', True)}\n"
+            f"Админ: {user_data['is_admin']}\n"
+            f"Тейков осталось: {remaining}/{MAX_TAKES_PER_DAY}"
+        )
     else:
-        await message.answer(f"Ваш ID: {uid}\n"
-                            f"Вы не зарегистрированы!")
+        await message.answer(f"Ваш ID: {uid}\nВы не зарегистрированы!")
+
 
 @dp.message(Command("debug"))
 async def cmd_debug(message: types.Message) -> None:
@@ -446,34 +547,43 @@ async def cmd_debug(message: types.Message) -> None:
         visible_in_top = sum(1 for u in users.values() if u.get('show_in_top', True))
         total_users = len(users)
         can_send, remaining = can_send_take(uid)
-        
-        await message.answer(f"📊 Debug info:\n"
-                            f"ID: {uid}\n"
-                            f"Username: {user_data['username']}\n"
-                            f"Баланс: {user_data['moons']}\n"
-                            f"Показывается в топе: {user_data.get('show_in_top', True)}\n"
-                            f"Админ: {user_data['is_admin']}\n"
-                            f"Викторина пройдена: {user_data['quiz_passed']}\n"
-                            f"Тейков осталось: {remaining}/{MAX_TAKES_PER_DAY}\n"
-                            f"Всего пользователей: {total_users}\n"
-                            f"Показывается в топе: {visible_in_top}")
+
+        await message.answer(
+            f"📊 Debug info:\n"
+            f"ID: {uid}\n"
+            f"Username: {user_data['username']}\n"
+            f"Баланс: {user_data['moons']}\n"
+            f"Показывается в топе: {user_data.get('show_in_top', True)}\n"
+            f"Админ: {user_data['is_admin']}\n"
+            f"Викторина пройдена: {user_data['quiz_passed']}\n"
+            f"Тейков осталось: {remaining}/{MAX_TAKES_PER_DAY}\n"
+            f"Всего пользователей: {total_users}\n"
+            f"Показывается в топе: {visible_in_top}"
+        )
     else:
         await message.answer("Вы не зарегистрированы!")
+
+
 # ====================== КОНЕЦ ОТЛАДКИ ======================
+
 
 # Command handlers
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message) -> None:
     """Handle the /start command."""
     register_user(message.from_user)
-    
+
     if message.from_user.id in ADMIN_IDS:
         await message.answer(
             "👋 Добро пожаловать, администратор! Выберите режим:",
             reply_markup=build_admin_switch_menu()
         )
     else:
-        await message.answer("👋 Добро пожаловать! Вы снова в топе! Выберите действие:", reply_markup=build_main_menu())
+        await message.answer(
+            "👋 Добро пожаловать! Вы снова в топе! Выберите действие:",
+            reply_markup=build_main_menu()
+        )
+
 
 @dp.message(Command("mode"))
 async def cmd_mode(message: types.Message) -> None:
@@ -483,34 +593,43 @@ async def cmd_mode(message: types.Message) -> None:
     else:
         await message.answer("У вас нет прав доступа к этой команде.")
 
+
 @dp.message(Command("admin"))
 async def cmd_admin(message: types.Message) -> None:
     """Admin command handler."""
     if message.from_user.id in ADMIN_IDS:
-        await message.answer("Панель администратора:", reply_markup=build_admin_menu(message.from_user.id))
+        await message.answer(
+            "Панель администратора:",
+            reply_markup=build_admin_menu(message.from_user.id)
+        )
     else:
         await message.answer("У вас нет прав доступа к этой команде.")
+
 
 @dp.message(Command("cancel"))
 async def cancel_handler(message: types.Message, state: FSMContext) -> None:
     """Cancel current action and return to main menu."""
     await state.clear()
     if message.from_user.id in ADMIN_IDS:
-        await message.answer("Действие отменено.", reply_markup=build_admin_menu(message.from_user.id))
+        await message.answer(
+            "Действие отменено.",
+            reply_markup=build_admin_menu(message.from_user.id)
+        )
     else:
         await message.answer("Действие отменено.", reply_markup=build_main_menu())
+
 
 # ====================== ОБРАБОТЧИКИ ТЕЙКОВ ======================
 @dp.callback_query(F.data == "send_take")
 async def send_take_start(callback: types.CallbackQuery, state: FSMContext) -> None:
     """Start the take submission process."""
     uid = callback.from_user.id
-    
+
     if uid not in users:
         register_user(callback.from_user)
-    
+
     can_send, remaining = can_send_take(uid)
-    
+
     if not can_send:
         time_until = get_time_until_reset(uid)
         await callback.answer(
@@ -519,7 +638,7 @@ async def send_take_start(callback: types.CallbackQuery, state: FSMContext) -> N
             show_alert=True
         )
         return
-    
+
     await callback.message.edit_text(
         f"📝 **Отправка тейка**\n\n"
         f"Отправьте ваш тейк (текст, фото, видео и т.д.)\n"
@@ -531,6 +650,7 @@ async def send_take_start(callback: types.CallbackQuery, state: FSMContext) -> N
     await state.set_state(TakeStates.WaitingTake)
     await callback.answer()
 
+
 @dp.callback_query(F.data == "cancel_take")
 async def cancel_take(callback: types.CallbackQuery, state: FSMContext) -> None:
     """Cancel take submission."""
@@ -538,12 +658,12 @@ async def cancel_take(callback: types.CallbackQuery, state: FSMContext) -> None:
     await callback.message.edit_text("Выбор действия:", reply_markup=build_main_menu())
     await callback.answer("Отправка тейка отменена")
 
+
 @dp.message(TakeStates.WaitingTake)
 async def process_take(message: types.Message, state: FSMContext) -> None:
     """Process the take submission."""
     uid = message.from_user.id
-    
-    # Проверяем лимит ещё раз
+
     can_send, remaining = can_send_take(uid)
     if not can_send:
         time_until = get_time_until_reset(uid)
@@ -554,8 +674,7 @@ async def process_take(message: types.Message, state: FSMContext) -> None:
         )
         await state.clear()
         return
-    
-    # Проверяем наличие хештега #тейк
+
     if not message_contains_take_hashtag(message):
         await message.answer(
             "⚠️ Добавьте #тейк в конец сообщения\n\n"
@@ -563,14 +682,13 @@ async def process_take(message: types.Message, state: FSMContext) -> None:
             reply_markup=build_cancel_keyboard()
         )
         return
-    
-    # Пересылаем в канал
+
     success = await forward_take_to_channel(message)
-    
+
     if success:
         add_take_timestamp(uid)
         _, new_remaining = can_send_take(uid)
-        
+
         await message.answer(
             f"✅ Ваш тейк успешно отправлен в канал!\n\n"
             f"📊 Осталось тейков сегодня: {new_remaining}/{MAX_TAKES_PER_DAY}",
@@ -581,25 +699,23 @@ async def process_take(message: types.Message, state: FSMContext) -> None:
             "❌ Ошибка при отправке тейка. Попробуйте позже.",
             reply_markup=build_main_menu()
         )
-    
+
     await state.clear()
+
 
 # ====================== АВТОМАТИЧЕСКАЯ ПЕРЕСЫЛКА СООБЩЕНИЙ С #тейк ======================
 @dp.message(F.text.contains("#тейк") | F.caption.contains("#тейк"))
 async def auto_forward_take(message: types.Message, state: FSMContext) -> None:
     """Automatically forward messages containing #тейк to the channel."""
-    # Проверяем, что это не состояние ожидания тейка (чтобы не дублировать)
     current_state = await state.get_state()
     if current_state == TakeStates.WaitingTake:
-        return  # Пропускаем, это обработается в process_take
-    
+        return
+
     uid = message.from_user.id
-    
-    # Регистрируем пользователя если нужно
+
     if uid not in users:
         register_user(message.from_user)
-    
-    # Проверяем лимит
+
     can_send, remaining = can_send_take(uid)
     if not can_send:
         time_until = get_time_until_reset(uid)
@@ -608,10 +724,9 @@ async def auto_forward_take(message: types.Message, state: FSMContext) -> None:
             f"Следующий тейк будет доступен через: {time_until}"
         )
         return
-    
-    # Пересылаем в канал
+
     success = await forward_take_to_channel(message)
-    
+
     if success:
         add_take_timestamp(uid)
         _, new_remaining = can_send_take(uid)
@@ -622,16 +737,24 @@ async def auto_forward_take(message: types.Message, state: FSMContext) -> None:
     else:
         await message.answer("❌ Ошибка при отправке тейка. Попробуйте позже.")
 
+
 # Admin callback handlers
 @dp.callback_query(F.data == "admin_reset_top")
 async def admin_reset_top(callback: types.CallbackQuery) -> None:
     """Hide all users from top (reset top)."""
     if callback.from_user.id == MAIN_ADMIN_ID:
         hidden_count = reset_top()
-        await callback.answer(f"Топ сброшен! {hidden_count} пользователей скрыто из топа.", show_alert=True)
-        await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu(callback.from_user.id))
+        await callback.answer(
+            f"Топ сброшен! {hidden_count} пользователей скрыто из топа.",
+            show_alert=True
+        )
+        await callback.message.edit_text(
+            "Панель администратора:",
+            reply_markup=build_admin_menu(callback.from_user.id)
+        )
     else:
         await callback.answer("Доступ запрещен", show_alert=True)
+
 
 @dp.callback_query(F.data == "admin_list_users")
 async def admin_list_users(callback: types.CallbackQuery) -> None:
@@ -640,45 +763,63 @@ async def admin_list_users(callback: types.CallbackQuery) -> None:
         user_list = []
         for uid, user_data in users.items():
             if uid != MAIN_ADMIN_ID:
-                display_name = f"@{user_data['username']}" if not user_data['username'].startswith('user') else user_data['name']
+                display_name = (
+                    f"@{user_data['username']}"
+                    if not user_data['username'].startswith('user')
+                    else user_data['name']
+                )
                 show_in_top = user_data.get('show_in_top', True)
                 status = "✅" if show_in_top else "❌"
                 user_list.append((display_name, user_data["moons"], user_data["name"], status))
-        
+
         if not user_list:
-            await callback.message.edit_text("Нет зарегистрированных пользователей.", reply_markup=build_admin_menu(callback.from_user.id))
+            await callback.message.edit_text(
+                "Нет зарегистрированных пользователей.",
+                reply_markup=build_admin_menu(callback.from_user.id)
+            )
             await callback.answer()
             return
-        
+
         text = "📊 Список всех пользователей:\n\n"
         for i, (display_name, moons, full_name, status) in enumerate(user_list, 1):
             text += f"{i}. {status} {display_name}"
             if not display_name.startswith('@'):
                 text += f" ({full_name})"
             text += f" - {moons if moons != float('inf') else '∞'} 🌗\n"
-        
-        await callback.message.edit_text(text, reply_markup=build_admin_menu(callback.from_user.id))
+
+        await callback.message.edit_text(
+            text, reply_markup=build_admin_menu(callback.from_user.id)
+        )
         await callback.answer()
     else:
         await callback.answer("Доступ запрещен", show_alert=True)
+
 
 @dp.callback_query(F.data == "admin_deduct_moons")
 async def admin_deduct_moons_start(callback: types.CallbackQuery, state: FSMContext) -> None:
     """Start moon deduction process."""
     if callback.from_user.id == MAIN_ADMIN_ID:
         visible_users = [u for uid, u in users.items() if uid != MAIN_ADMIN_ID]
-        
+
         if not visible_users:
-            await callback.message.edit_text("Нет пользователей для списания.", reply_markup=build_admin_menu(callback.from_user.id))
+            await callback.message.edit_text(
+                "Нет пользователей для списания.",
+                reply_markup=build_admin_menu(callback.from_user.id)
+            )
             await callback.answer()
             return
 
-        text = "Пользователи:\n" + "\n".join([f"@{u['username']} ({u['moons']} 🌗)" for u in visible_users])
-        await callback.message.edit_text(text + "\n\nВведите username пользователя для списания (без @):")
+        text = "Пользователи:\n" + "\n".join(
+            [f"@{u['username']} ({u['moons']} 🌗)" for u in visible_users]
+        )
+        await callback.message.edit_text(
+            text + "\n\nВведите username пользователя для списания (без @):"
+        )
         await state.set_state(AdminStates.WaitingUsernameForDeduct)
         await callback.answer()
     else:
         await callback.answer("Доступ запрещен", show_alert=True)
+
 
 @dp.message(AdminStates.WaitingUsernameForDeduct)
 async def admin_receive_username(message: types.Message, state: FSMContext) -> None:
@@ -688,7 +829,7 @@ async def admin_receive_username(message: types.Message, state: FSMContext) -> N
         return
 
     username = message.text.strip().lstrip('@').lower()
-    
+
     target_uid = None
     for uid, data in users.items():
         if data["username"].lower() == username and uid != MAIN_ADMIN_ID:
@@ -700,8 +841,11 @@ async def admin_receive_username(message: types.Message, state: FSMContext) -> N
         return
 
     await state.update_data(target_uid=target_uid, target_username=username)
-    await message.answer(f"Сколько лун списать у @{username}? (текущий баланс: {users[target_uid]['moons']} 🌗)")
+    await message.answer(
+        f"Сколько лун списать у @{username}? (текущий баланс: {users[target_uid]['moons']} 🌗)"
+    )
     await state.set_state(AdminStates.WaitingAmountForDeduct)
+
 
 @dp.message(AdminStates.WaitingAmountForDeduct)
 async def admin_receive_amount(message: types.Message, state: FSMContext) -> None:
@@ -738,16 +882,20 @@ async def admin_receive_amount(message: types.Message, state: FSMContext) -> Non
 
     await state.clear()
 
+
 @dp.callback_query(F.data == "admin_balance")
 async def admin_balance_handler(callback: types.CallbackQuery) -> None:
     """Show admin balance."""
     if callback.from_user.id in ADMIN_IDS:
         moons = get_user_balance(callback.from_user.id)
         text = f"Ваш баланс - {'∞' if moons == float('inf') else moons} 🌗"
-        await callback.message.edit_text(text, reply_markup=build_admin_menu(callback.from_user.id))
+        await callback.message.edit_text(
+            text, reply_markup=build_admin_menu(callback.from_user.id)
+        )
         await callback.answer()
     else:
         await callback.answer("Доступ запрещен", show_alert=True)
+
 
 @dp.callback_query(F.data == "admin_infinite_balance")
 async def admin_infinite_balance_handler(callback: types.CallbackQuery) -> None:
@@ -755,19 +903,30 @@ async def admin_infinite_balance_handler(callback: types.CallbackQuery) -> None:
     if callback.from_user.id == MAIN_ADMIN_ID:
         set_admin_infinite_balance(callback.from_user.id)
         await callback.answer("Баланс установлен на бесконечный!", show_alert=True)
-        await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu(callback.from_user.id))
+        await callback.message.edit_text(
+            "Панель администратора:",
+            reply_markup=build_admin_menu(callback.from_user.id)
+        )
     else:
         await callback.answer("Доступ запрещен", show_alert=True)
+
 
 @dp.callback_query(F.data == "admin_normal_balance")
 async def admin_normal_balance_handler(callback: types.CallbackQuery) -> None:
     """Set normal balance for admin."""
     if callback.from_user.id in ADMIN_IDS and callback.from_user.id != MAIN_ADMIN_ID:
         set_admin_normal_balance(callback.from_user.id)
-        await callback.answer(f"Баланс установлен на обычный: {ADMIN_STARTING_BALANCE} 🌗", show_alert=True)
-        await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu(callback.from_user.id))
+        await callback.answer(
+            f"Баланс установлен на обычный: {ADMIN_STARTING_BALANCE} 🌗",
+            show_alert=True
+        )
+        await callback.message.edit_text(
+            "Панель администратора:",
+            reply_markup=build_admin_menu(callback.from_user.id)
+        )
     else:
         await callback.answer("Доступ запрещен", show_alert=True)
+
 
 # Callback query handlers
 @dp.callback_query(F.data == "earn")
@@ -779,6 +938,7 @@ async def earn_lunes(callback: types.CallbackQuery) -> None:
     )
     await callback.answer()
 
+
 @dp.callback_query(F.data == "quiz_start")
 async def quiz_start(callback: types.CallbackQuery) -> None:
     """Start the quiz if not already completed."""
@@ -786,14 +946,19 @@ async def quiz_start(callback: types.CallbackQuery) -> None:
 
     if uid not in users:
         register_user(callback.from_user)
-    
+
     if users[uid]["quiz_passed"]:
         await callback.answer("Вы уже прошли викторину", show_alert=True)
         await asyncio.sleep(1)
         if uid in ADMIN_IDS:
-            await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu(uid))
+            await callback.message.edit_text(
+                "Панель администратора:",
+                reply_markup=build_admin_menu(uid)
+            )
         else:
-            await callback.message.edit_text("Выбор действия:", reply_markup=build_main_menu())
+            await callback.message.edit_text(
+                "Выбор действия:", reply_markup=build_main_menu()
+            )
         return
 
     builder = InlineKeyboardBuilder()
@@ -804,29 +969,43 @@ async def quiz_start(callback: types.CallbackQuery) -> None:
     await callback.message.edit_text("Готовы?", reply_markup=builder.as_markup())
     await callback.answer()
 
+
 @dp.callback_query(F.data == "quiz_cancel")
 async def quiz_cancel(callback: types.CallbackQuery) -> None:
     """Cancel the quiz and return to main menu."""
     if callback.from_user.id in ADMIN_IDS:
-        await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu(callback.from_user.id))
+        await callback.message.edit_text(
+            "Панель администратора:",
+            reply_markup=build_admin_menu(callback.from_user.id)
+        )
     else:
-        await callback.message.edit_text("Выбор действия:", reply_markup=build_main_menu())
+        await callback.message.edit_text(
+            "Выбор действия:", reply_markup=build_main_menu()
+        )
     await callback.answer()
+
 
 @dp.callback_query(F.data == "user_mode")
 async def switch_to_user_mode(callback: types.CallbackQuery) -> None:
     """Switch to user mode."""
-    await callback.message.edit_text("Выбор действия:", reply_markup=build_main_menu())
+    await callback.message.edit_text(
+        "Выбор действия:", reply_markup=build_main_menu()
+    )
     await callback.answer()
+
 
 @dp.callback_query(F.data == "admin_mode")
 async def switch_to_admin_mode(callback: types.CallbackQuery) -> None:
     """Switch to admin mode."""
     if callback.from_user.id in ADMIN_IDS:
-        await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu(callback.from_user.id))
+        await callback.message.edit_text(
+            "Панель администратора:",
+            reply_markup=build_admin_menu(callback.from_user.id)
+        )
     else:
         await callback.answer("У вас нет прав администратора!", show_alert=True)
     await callback.answer()
+
 
 # Quiz questions and answers
 QUIZ_QUESTIONS = {
@@ -856,6 +1035,7 @@ QUIZ_QUESTIONS = {
     }
 }
 
+
 @dp.callback_query(F.data.startswith("quiz_q"))
 async def quiz_questions(callback: types.CallbackQuery) -> None:
     """Handle quiz questions."""
@@ -865,10 +1045,15 @@ async def quiz_questions(callback: types.CallbackQuery) -> None:
         builder = InlineKeyboardBuilder()
 
         for option_text, callback_data in question_data["options"]:
-            builder.row(InlineKeyboardButton(text=option_text, callback_data=callback_data))
+            builder.row(
+                InlineKeyboardButton(text=option_text, callback_data=callback_data)
+            )
 
-        await callback.message.edit_text(question_data["text"], reply_markup=builder.as_markup())
+        await callback.message.edit_text(
+            question_data["text"], reply_markup=builder.as_markup()
+        )
         await callback.answer()
+
 
 @dp.callback_query(F.data.startswith("quiz_a"))
 async def quiz_answers(callback: types.CallbackQuery) -> None:
@@ -889,15 +1074,28 @@ async def quiz_answers(callback: types.CallbackQuery) -> None:
             users[uid]["quiz_passed"] = True
             await callback.answer("Вы прошли викторину!")
             if uid in ADMIN_IDS:
-                await callback.message.edit_text("Вы прошли викторину! Панель администратора:", reply_markup=build_admin_menu(uid))
+                await callback.message.edit_text(
+                    "Вы прошли викторину! Панель администратора:",
+                    reply_markup=build_admin_menu(uid)
+                )
             else:
-                await callback.message.edit_text("Вы прошли викторину! Выбор действия:", reply_markup=build_main_menu())
+                await callback.message.edit_text(
+                    "Вы прошли викторину! Выбор действия:",
+                    reply_markup=build_main_menu()
+                )
     else:
         await callback.answer("Неправильный ответ", show_alert=True)
         if uid in ADMIN_IDS:
-            await callback.message.edit_text("Неправильный ответ\n\nПанель администратора:", reply_markup=build_admin_menu(uid))
+            await callback.message.edit_text(
+                "Неправильный ответ\n\nПанель администратора:",
+                reply_markup=build_admin_menu(uid)
+            )
         else:
-            await callback.message.edit_text("Неправильный ответ\n\nВыбор действия:", reply_markup=build_main_menu())
+            await callback.message.edit_text(
+                "Неправильный ответ\n\nВыбор действия:",
+                reply_markup=build_main_menu()
+            )
+
 
 # Transfer handlers
 @dp.callback_query(F.data == "transfer")
@@ -906,18 +1104,30 @@ async def transfer_start(callback: types.CallbackQuery, state: FSMContext) -> No
     visible_users = []
     for uid, u in users.items():
         if uid != MAIN_ADMIN_ID and uid != callback.from_user.id:
-            display_name = f"@{u['username']}" if not u['username'].startswith('user') else f"{u['name']} (ID: {uid})"
+            display_name = (
+                f"@{u['username']}"
+                if not u['username'].startswith('user')
+                else f"{u['name']} (ID: {uid})"
+            )
             visible_users.append((display_name, u['username']))
-    
+
     if not visible_users:
-        await callback.message.edit_text("Пока нет других пользователей для перевода.", reply_markup=build_main_menu())
+        await callback.message.edit_text(
+            "Пока нет других пользователей для перевода.",
+            reply_markup=build_main_menu()
+        )
         await callback.answer()
         return
 
-    text = "Пользователи:\n" + "\n".join([display_name for display_name, _ in visible_users])
-    await callback.message.edit_text(text + "\n\nВыберите получателя (введите username без @ или ID):")
+    text = "Пользователи:\n" + "\n".join(
+        [display_name for display_name, _ in visible_users]
+    )
+    await callback.message.edit_text(
+        text + "\n\nВыберите получателя (введите username без @ или ID):"
+    )
     await state.set_state(TransferStates.WaitingReceiver)
     await callback.answer()
+
 
 @dp.message(TransferStates.WaitingReceiver)
 async def receive_receiver(message: types.Message, state: FSMContext) -> None:
@@ -926,32 +1136,39 @@ async def receive_receiver(message: types.Message, state: FSMContext) -> None:
     sender_uid = message.from_user.id
 
     receiver_uid = None
-    
+
     try:
         potential_uid = int(receiver_input)
         if potential_uid in users and potential_uid != MAIN_ADMIN_ID:
             receiver_uid = potential_uid
     except ValueError:
         pass
-    
+
     if receiver_uid is None:
         for uid, data in users.items():
-            if (data["username"].lower() == receiver_input or 
-                data["name"].lower() == receiver_input) and uid != MAIN_ADMIN_ID:
+            if (
+                data["username"].lower() == receiver_input
+                or data["name"].lower() == receiver_input
+            ) and uid != MAIN_ADMIN_ID:
                 receiver_uid = uid
                 break
 
     if receiver_uid is None:
-        await message.answer("Пользователь не найден. Попробуйте ещё раз или введите /cancel")
+        await message.answer(
+            "Пользователь не найден. Попробуйте ещё раз или введите /cancel"
+        )
         return
 
     if receiver_uid == sender_uid:
-        await message.answer("Нельзя перевести самому себе. Выберите другого пользователя.")
+        await message.answer(
+            "Нельзя перевести самому себе. Выберите другого пользователя."
+        )
         return
 
     await state.update_data(receiver_uid=receiver_uid)
     await message.answer("Сколько лун хотите перевести?")
     await state.set_state(TransferStates.WaitingAmount)
+
 
 @dp.message(TransferStates.WaitingAmount)
 async def receive_amount(message: types.Message, state: FSMContext) -> None:
@@ -991,15 +1208,20 @@ async def receive_amount(message: types.Message, state: FSMContext) -> None:
 
     await state.clear()
 
+
 @dp.callback_query(F.data == "top")
 async def show_top(callback: types.CallbackQuery) -> None:
     """Show top users by moon balance."""
     filtered = []
     for uid, u in users.items():
         if uid != MAIN_ADMIN_ID and u.get("show_in_top", True):
-            display_name = f"@{u['username']}" if not u['username'].startswith('user') else u['name']
+            display_name = (
+                f"@{u['username']}"
+                if not u['username'].startswith('user')
+                else u['name']
+            )
             filtered.append((display_name, u["moons"]))
-    
+
     if not filtered:
         await callback.message.edit_text(
             "Топ пуст! Пользователи будут появляться здесь после того как нажмут /start.",
@@ -1007,8 +1229,10 @@ async def show_top(callback: types.CallbackQuery) -> None:
         )
         await callback.answer()
         return
-    
-    filtered.sort(key=lambda x: x[1] if x[1] != float('inf') else 0, reverse=True)
+
+    filtered.sort(
+        key=lambda x: x[1] if x[1] != float('inf') else 0, reverse=True
+    )
     top10 = filtered[:10]
 
     text = "🏆 Топ 10 по лунам 🌗:\n"
@@ -1018,25 +1242,31 @@ async def show_top(callback: types.CallbackQuery) -> None:
     await callback.message.edit_text(text, reply_markup=build_main_menu())
     await callback.answer()
 
+
 @dp.callback_query(F.data == "balance")
 async def show_balance(callback: types.CallbackQuery) -> None:
     """Show user's moon balance."""
     uid = callback.from_user.id
     moons = get_user_balance(uid)
     can_send, remaining = can_send_take(uid)
-    
+
     if uid in users:
         show_in_top = users[uid].get("show_in_top", True)
-        status = "✅ Вы показываетесь в топе" if show_in_top else "❌ Вы скрыты из топа (нажмите /start)"
+        status = (
+            "✅ Вы показываетесь в топе"
+            if show_in_top
+            else "❌ Вы скрыты из топа (нажмите /start)"
+        )
     else:
         status = ""
-    
+
     text = f"Ваш баланс - {'∞' if moons == float('inf') else moons} 🌗\n"
     text += f"📝 Тейков осталось: {remaining}/{MAX_TAKES_PER_DAY}\n"
     text += status
 
     await callback.message.edit_text(text, reply_markup=build_main_menu())
     await callback.answer()
+
 
 # Main function
 async def main() -> None:
@@ -1048,6 +1278,7 @@ async def main() -> None:
         logger.error(f"Error starting bot: {e}")
     finally:
         logger.info("Bot stopped")
+
 
 if __name__ == "__main__":
     print("🚀 Запуск бота StarFlighter...")
