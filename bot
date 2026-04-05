@@ -1,58 +1,189 @@
 import asyncio
 import logging
 import re
-import io
-from typing import Dict, Any, Union, List, Tuple, Optional
-from html import escape as html_escape
 import json
 import os
+import uuid
+from typing import Dict, Any, Union, List, Tuple, Optional
+from html import escape as html_escape
 from datetime import datetime, timedelta
+from dataclasses import dataclass, field, asdict
 
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types, F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, User
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-# Constants
-TOKEN = "8216288128:AAHWCLpy-tPcFKjbpM2hUN1xt6P850mi5qE"
+# ====================== CONFIGURATION ======================
+MAIN_BOT_TOKEN = "8216288128:AAHWCLpy-tPcFKjbpM2hUN1xt6P850mi5qE"
 MAIN_ADMIN_ID = 6098677257
 ADMIN_IDS = {6098677257, 8092280284, 8366347415}
-CHANNEL_URL = "https://t.me/WINGSOFFIRECHANNEL"
-TAKES_CHANNEL = "@WINGSOFFIRECHANNEL"
-SHOP_CHANNEL = "@wingsoffiremagazine"
-MAX_TAKES_PER_DAY = 3
-QUIZ_REWARD = 50
-DATA_FILE = "users_data.json"
-ADMIN_STARTING_BALANCE = 100
-PROMO_PRICE_PER_HOUR = 10
-PROMO_PIN_PRICE_PER_HOUR = 25
+DATA_FILE = "bot_data.json"
 
-# Data storage
-users: Dict[int, Dict[str, Any]] = {}
-user_id_to_username: Dict[int, str] = {}
-blocked_users: set = set()
-frozen_accounts: set = set()
-sent_takes: Dict[str, Dict[str, Any]] = {}
-pending_purchases: Dict[str, Dict[str, Any]] = {}
-scheduled_deletions: Dict[str, asyncio.Task] = {}
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-# States
+# ====================== DATA CLASSES ======================
+@dataclass
+class BotConfig:
+    bot_id: str
+    token: str
+    currency_name: str
+    currency_emoji: str
+    channel_url: str = ""
+    takes_channel: str = ""
+    shop_channel: str = ""
+    modules: List[str] = field(default_factory=lambda: ["takes", "shop"])
+    max_takes_per_day: int = 3
+    quiz_reward: int = 50
+    admin_starting_balance: int = 100
+    promo_price_per_hour: int = 10
+    promo_pin_price_per_hour: int = 25
+    owner_id: int = 0
+    base_exchange_rate: float = 0.5
+    censored_words: List[str] = field(default_factory=list)
+    marker_words: List[str] = field(default_factory=list)
+    shop_topics: List[Dict[str, str]] = field(default_factory=list)
+
+@dataclass
+class UserData:
+    user_id: int
+    username: str
+    name: str
+    balances: Dict[str, Any] = field(default_factory=dict)
+    quiz_passed: Dict[str, bool] = field(default_factory=dict)
+    takes_timestamps: Dict[str, List[str]] = field(default_factory=dict)
+    show_in_top: Dict[str, bool] = field(default_factory=dict)
+    is_blocked: Dict[str, bool] = field(default_factory=dict)
+    is_frozen: Dict[str, bool] = field(default_factory=dict)
+    is_moderator: Dict[str, bool] = field(default_factory=dict)
+    is_admin: Dict[str, bool] = field(default_factory=dict)
+    is_owner: Dict[str, bool] = field(default_factory=dict)
+
+@dataclass
+class ExchangeRates:
+    rates: Dict[str, float] = field(default_factory=dict)
+    last_update: str = ""
+    rates_locked: bool = False
+
+@dataclass
+class PendingBotRequest:
+    request_id: str
+    user_id: int
+    channel_url: str
+    status: str = "pending"
+    token: str = ""
+    currency_name: str = ""
+    currency_emoji: str = ""
+    modules: List[str] = field(default_factory=list)
+    takes_channel: str = ""
+    shop_channel: str = ""
+
+# ====================== DATA STORAGE ======================
+class DataStorage:
+    def __init__(self):
+        self.bots: Dict[str, BotConfig] = {}
+        self.users: Dict[int, UserData] = {}
+        self.exchange_rates: ExchangeRates = ExchangeRates()
+        self.pending_requests: Dict[str, PendingBotRequest] = {}
+        self.pending_takes: Dict[str, Dict] = {}
+        self.pending_purchases: Dict[str, Dict] = {}
+        self.active_bots: Dict[str, Bot] = {}
+        self.active_dispatchers: Dict[str, Dispatcher] = {}
+        self.waiting_for_token: Dict[int, str] = {}
+
+    def load(self):
+        try:
+            if os.path.exists(DATA_FILE):
+                with open(DATA_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+
+                for bot_id, bot_data in data.get('bots', {}).items():
+                    self.bots[bot_id] = BotConfig(**bot_data)
+
+                for uid, user_data in data.get('users', {}).items():
+                    self.users[int(uid)] = UserData(**user_data)
+
+                if 'exchange_rates' in data:
+                    self.exchange_rates = ExchangeRates(**data['exchange_rates'])
+
+                for req_id, req_data in data.get('pending_requests', {}).items():
+                    self.pending_requests[req_id] = PendingBotRequest(**req_data)
+
+                self.pending_takes = data.get('pending_takes', {})
+                self.pending_purchases = data.get('pending_purchases', {})
+
+                logger.info(f"Loaded {len(self.bots)} bots, {len(self.users)} users")
+        except Exception as e:
+            logger.error(f"Error loading data: {e}")
+
+        if "main" not in self.bots:
+            self.bots["main"] = BotConfig(
+                bot_id="main",
+                token=MAIN_BOT_TOKEN,
+                currency_name="луны",
+                currency_emoji="🌗",
+                channel_url="https://t.me/WINGSOFFIRECHANNEL",
+                takes_channel="@WINGSOFFIRECHANNEL",
+                shop_channel="@wingsoffiremagazine",
+                modules=["takes", "shop"],
+                owner_id=MAIN_ADMIN_ID,
+                base_exchange_rate=1.0
+            )
+            self.exchange_rates.rates["main"] = 1.0
+            self.save()
+
+    def save(self):
+        try:
+            users_data = {}
+            for uid, user in self.users.items():
+                user_dict = asdict(user)
+                for bot_id, balance in user_dict['balances'].items():
+                    if balance == float('inf'):
+                        user_dict['balances'][bot_id] = "inf"
+                users_data[uid] = user_dict
+
+            data = {
+                'bots': {k: asdict(v) for k, v in self.bots.items()},
+                'users': users_data,
+                'exchange_rates': asdict(self.exchange_rates),
+                'pending_requests': {k: asdict(v) for k, v in self.pending_requests.items()},
+                'pending_takes': self.pending_takes,
+                'pending_purchases': self.pending_purchases
+            }
+            with open(DATA_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"Error saving data: {e}")
+
+    def get_balance(self, user_id: int, bot_id: str) -> float:
+        if user_id not in self.users:
+            return 0
+        balance = self.users[user_id].balances.get(bot_id, 0)
+        if balance == "inf":
+            return float('inf')
+        return float(balance)
+
+storage = DataStorage()
+
+# ====================== STATES ======================
 class AdminStates(StatesGroup):
     WaitingUsernameForDeduct = State()
     WaitingAmountForDeduct = State()
     WaitingUsernameForFreeze = State()
     WaitingUsernameForUnfreeze = State()
-
-class QuizStates(StatesGroup):
-    Q1 = State()
-    Q2 = State()
-    Q3 = State()
+    WaitingCensorWord = State()
+    WaitingMarkerWord = State()
+    WaitingRemoveCensorWord = State()
+    WaitingRemoveMarkerWord = State()
+    WaitingModeratorUsername = State()
+    WaitingRemoveModeratorUsername = State()
+    WaitingTopicName = State()
+    WaitingTopicThreadId = State()
+    WaitingRemoveTopic = State()
 
 class TransferStates(StatesGroup):
     WaitingReceiver = State()
@@ -65,6 +196,7 @@ class ProductStates(StatesGroup):
     WaitingProductImage = State()
     WaitingProductPrice = State()
     WaitingProductContact = State()
+    WaitingProductTopic = State()
 
 class PromoStates(StatesGroup):
     WaitingHours = State()
@@ -76,1602 +208,2047 @@ class PurchaseStates(StatesGroup):
     WaitingSellerInfo = State()
     WaitingAmount = State()
 
-# Initialize bot and dispatcher
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
+class ConvertStates(StatesGroup):
+    WaitingSourceCurrency = State()
+    WaitingTargetCurrency = State()
+    WaitingAmount = State()
 
-# ====================== ЦЕНЗУРА МАТА ======================
+class ConnectBotStates(StatesGroup):
+    WaitingChannelUrl = State()
+    WaitingToken = State()
+    WaitingCurrencyName = State()
+    WaitingCurrencyEmoji = State()
+    WaitingModules = State()
+    WaitingTakesChannel = State()
+    WaitingShopChannel = State()
 
+class QuizStates(StatesGroup):
+    Question1 = State()
+    Question2 = State()
+    Question3 = State()
+
+# ====================== CENSORSHIP ======================
+
+# Базовые префиксы для составных матерных слов
 _PFX = r'(?:за|на|по|от|об|до|у|о|вы|пере|при|рас|раз|про|недо|пре|с|ис|из)?'
 _PFX_EB = r'(?:за|на|по|от|отъ|об|объ|до|у|о|вы|пере|при|рас|раз|про|недо|пре|съ|ис|из|долбо)?'
 
-_PROFANITY_RE = re.compile(
-    r'\b(?:'
-    + _PFX + r'ху[йяеёюи]\w*'
-    r'|' + _PFX + r'пизд\w*'
-    r'|' + _PFX_EB + r'[её]б\w*'
-    r'|бля[дт]\w*'
-    r'|сук[аиуе]\w*'
-    r'|суч[каеьи]\w*'
-    r'|муда[кч]\w*|мудил\w*|мудозвон\w*'
-    r'|пидор\w*|пидар\w*|пидр\w*|педик\w*|педераст\w*'
-    r'|шлюх\w*|гандон\w*|залуп\w*|дроч\w*|манд[аоуеёяи]\w*'
-    r')\b',
-    re.IGNORECASE | re.UNICODE
-)
+# Базовые паттерны с корнями (всегда работают)
+BASE_PROFANITY_PATTERNS = [
+    _PFX + r'ху[йяеёюи]\w*',
+    _PFX + r'пизд\w*',
+    _PFX_EB + r'[её]б\w*',
+    r'бля[дт]\w*',
+    r'сук[аиуе]\w*',
+    r'суч[каеьи]\w*',
+    r'муда[кч]\w*',
+    r'мудил\w*',
+    r'мудозвон\w*',
+    r'пидор\w*',
+    r'пидар\w*',
+    r'пидр\w*',
+    r'педик\w*',
+    r'педераст\w*',
+    r'шлюх\w*',
+    r'гандон\w*',
+    r'залуп\w*',
+    r'дроч\w*',
+    r'манд[аоуеёяи]\w*',
+    r'[её]бл[ао]\w*',
+    r'[её]бну\w*',
+    r'[её]бан\w*',
+    r'хер[а-яё]*\w*',
+    r'жоп[аеу|ы]\w*',
+    r'срать?\w*',
+    r'сран\w*',
+    r'говн[оа]\w*',
+    r'засранец\w*',
+    r'засранк[аи]\w*',
+]
 
-def censor_profanity(text: str) -> Tuple[str, bool]:
+def build_profanity_regex(bot_id: str) -> re.Pattern:
+    """Строит регулярное выражение для цензуры."""
+    bot_config = storage.bots.get(bot_id)
+    
+    patterns = BASE_PROFANITY_PATTERNS.copy()
+
+    if bot_config and bot_config.censored_words:
+        for word in bot_config.censored_words:
+            patterns.append(re.escape(word) + r'\w*')
+
+    pattern = r'\b(?:' + '|'.join(patterns) + r')\b'
+    return re.compile(pattern, re.IGNORECASE | re.UNICODE)
+
+def censor_profanity(text: str, bot_id: str) -> Tuple[str, bool]:
+    """Заменяет мат на HTML-спойлеры."""
     if not text:
         return text, False
-    matches = list(_PROFANITY_RE.finditer(text))
+    
+    regex = build_profanity_regex(bot_id)
+    matches = list(regex.finditer(text))
+    
     if not matches:
         return text, False
-    parts: list = []
+    
+    parts = []
     last = 0
     for m in matches:
         parts.append(html_escape(text[last:m.start()]))
         parts.append(f'<tg-spoiler>{html_escape(m.group())}</tg-spoiler>')
         last = m.end()
     parts.append(html_escape(text[last:]))
+    
     return ''.join(parts), True
 
-# ====================== Data persistence ======================
+def contains_marker_words(text: str, bot_id: str) -> bool:
+    """Проверяет наличие слов-маркеров для модерации."""
+    if not text:
+        return False
+    bot_config = storage.bots.get(bot_id)
+    if not bot_config or not bot_config.marker_words:
+        return False
+    text_lower = text.lower()
+    for word in bot_config.marker_words:
+        if word.lower() in text_lower:
+            return True
+    return False
 
-def load_data():
-    global users, user_id_to_username, blocked_users, frozen_accounts, sent_takes, pending_purchases
-    try:
-        if os.path.exists(DATA_FILE):
-            with open(DATA_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                users = {int(k): v for k, v in data.get('users', {}).items()}
-                user_id_to_username = {int(k): v for k, v in data.get('user_id_to_username', {}).items()}
-                blocked_users = set(data.get('blocked_users', []))
-                frozen_accounts = set(data.get('frozen_accounts', []))
-                sent_takes = data.get('sent_takes', {})
-                pending_purchases = data.get('pending_purchases', {})
-
-                for user_data in users.values():
-                    if 'show_in_top' not in user_data:
-                        user_data['show_in_top'] = True
-                    if 'takes_timestamps' not in user_data:
-                        user_data['takes_timestamps'] = []
-
-                logger.info(f"Loaded {len(users)} users from file")
-    except Exception as e:
-        logger.error(f"Error loading data: {e}")
-
-def save_data():
-    try:
-        data = {
-            'users': users,
-            'user_id_to_username': user_id_to_username,
-            'blocked_users': list(blocked_users),
-            'frozen_accounts': list(frozen_accounts),
-            'sent_takes': sent_takes,
-            'pending_purchases': pending_purchases
-        }
-        with open(DATA_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.error(f"Error saving data: {e}")
-
-# ====================== User management ======================
-
-def is_user_blocked(user_id: int) -> bool:
-    return user_id in blocked_users
-
-def block_user(user_id: int) -> None:
-    blocked_users.add(user_id)
-    save_data()
-
-def unblock_user(user_id: int) -> None:
-    blocked_users.discard(user_id)
-    save_data()
-
-def is_account_frozen(user_id: int) -> bool:
-    return user_id in frozen_accounts
-
-def freeze_account(user_id: int) -> None:
-    frozen_accounts.add(user_id)
-    save_data()
-
-def unfreeze_account(user_id: int) -> None:
-    frozen_accounts.discard(user_id)
-    save_data()
-
-def get_takes_count_last_24h(user_id: int) -> int:
-    if user_id not in users:
-        return 0
-    now = datetime.now()
-    cutoff = now - timedelta(hours=24)
-    valid_timestamps = []
-    for ts_str in users[user_id].get('takes_timestamps', []):
-        try:
-            ts = datetime.fromisoformat(ts_str)
-            if ts > cutoff:
-                valid_timestamps.append(ts_str)
-        except:
-            continue
-    users[user_id]['takes_timestamps'] = valid_timestamps
-    return len(valid_timestamps)
-
-def add_take_timestamp(user_id: int) -> None:
-    if user_id not in users:
-        return
-    if 'takes_timestamps' not in users[user_id]:
-        users[user_id]['takes_timestamps'] = []
-    users[user_id]['takes_timestamps'].append(datetime.now().isoformat())
-    save_data()
-
-def can_send_take(user_id: int) -> Tuple[bool, int]:
-    count = get_takes_count_last_24h(user_id)
-    remaining = MAX_TAKES_PER_DAY - count
-    return remaining > 0, remaining
-
-def get_time_until_reset(user_id: int) -> str:
-    if user_id not in users:
-        return "неизвестно"
-    timestamps = users[user_id].get('takes_timestamps', [])
-    if not timestamps:
-        return "сейчас"
-    try:
-        oldest = min(datetime.fromisoformat(ts) for ts in timestamps)
-        reset_time = oldest + timedelta(hours=24)
-        now = datetime.now()
-        if reset_time <= now:
-            return "сейчас"
-        diff = reset_time - now
-        hours = diff.seconds // 3600
-        minutes = (diff.seconds % 3600) // 60
-        return f"{hours}ч {minutes}мин"
-    except:
-        return "неизвестно"
-
-def register_user(user: User) -> None:
+# ====================== USER MANAGEMENT ======================
+def get_or_create_user(user: User, bot_id: str) -> UserData:
     uid = user.id
     username = user.username or f"user{uid}"
     name = user.full_name
 
-    if uid in user_id_to_username and user_id_to_username[uid] != username:
-        logger.info(f"Username changed for user {uid}: {user_id_to_username[uid]} -> {username}")
+    if uid not in storage.users:
+        storage.users[uid] = UserData(user_id=uid, username=username, name=name)
 
-    user_id_to_username[uid] = username
+    user_data = storage.users[uid]
+    user_data.username = username
+    user_data.name = name
 
-    if uid not in users:
-        is_admin = uid in ADMIN_IDS
-        moons = float('inf') if uid == MAIN_ADMIN_ID else (ADMIN_STARTING_BALANCE if is_admin else 0)
-        users[uid] = {
-            "username": username,
-            "name": name,
-            "moons": moons,
-            "quiz_passed": False,
-            "is_admin": is_admin,
-            "show_in_top": True,
-            "takes_timestamps": []
-        }
-        save_data()
-    else:
-        users[uid]["show_in_top"] = True
-        if 'takes_timestamps' not in users[uid]:
-            users[uid]['takes_timestamps'] = []
-        if users[uid]["username"] != username:
-            users[uid]["username"] = username
-        save_data()
+    if bot_id not in user_data.balances:
+        bot_config = storage.bots.get(bot_id)
+        is_owner_flag = bot_config and bot_config.owner_id == uid
+        is_admin_flag = bot_id == "main" and uid in ADMIN_IDS
+        is_main_owner = bot_id == "main" and uid == MAIN_ADMIN_ID
 
-def get_user_balance(user_id: int) -> Union[float, int]:
-    return users.get(user_id, {}).get("moons", 0)
+        if is_owner_flag or is_main_owner:
+            user_data.balances[bot_id] = float('inf')
+        elif is_admin_flag:
+            user_data.balances[bot_id] = storage.bots[bot_id].admin_starting_balance
+        else:
+            user_data.balances[bot_id] = 0
 
-def add_moons(user_id: int, amount: int) -> None:
-    if user_id in users and users[user_id]["moons"] != float('inf'):
-        users[user_id]["moons"] += amount
-        save_data()
+        user_data.quiz_passed[bot_id] = False
+        user_data.takes_timestamps[bot_id] = []
+        user_data.show_in_top[bot_id] = True
+        user_data.is_blocked[bot_id] = False
+        user_data.is_frozen[bot_id] = False
+        user_data.is_moderator[bot_id] = False
+        user_data.is_admin[bot_id] = is_admin_flag or is_owner_flag or is_main_owner
+        user_data.is_owner[bot_id] = is_owner_flag or is_main_owner
 
-def transfer_moons(sender_id: int, receiver_id: int, amount: int) -> bool:
-    sender = users.get(sender_id)
-    receiver = users.get(receiver_id)
+    storage.save()
+    return user_data
 
-    if not sender or not receiver:
+def get_balance(user_id: int, bot_id: str) -> float:
+    return storage.get_balance(user_id, bot_id)
+
+def add_balance(user_id: int, bot_id: str, amount: float) -> bool:
+    if user_id not in storage.users:
         return False
-    
-    if is_account_frozen(sender_id) or is_account_frozen(receiver_id):
-        return False
-
-    if sender["moons"] != float('inf') and sender["moons"] < amount:
-        return False
-
-    if sender["moons"] != float('inf'):
-        sender["moons"] -= amount
-    if receiver["moons"] != float('inf'):
-        receiver["moons"] += amount
-
-    save_data()
+    user = storage.users[user_id]
+    current = user.balances.get(bot_id, 0)
+    if current == float('inf') or current == "inf":
+        return True
+    user.balances[bot_id] = float(current) + amount
+    storage.save()
     return True
 
-def deduct_moons(user_id: int, amount: int) -> bool:
-    if user_id not in users:
+def deduct_balance(user_id: int, bot_id: str, amount: float) -> bool:
+    if user_id not in storage.users:
         return False
-    if users[user_id]["moons"] == float('inf'):
+    user = storage.users[user_id]
+    current = user.balances.get(bot_id, 0)
+    if current == float('inf') or current == "inf":
+        return True
+    if float(current) < amount:
         return False
-    if users[user_id]["moons"] < amount:
-        users[user_id]["moons"] = 0
-    else:
-        users[user_id]["moons"] -= amount
-    save_data()
+    user.balances[bot_id] = float(current) - amount
+    storage.save()
     return True
 
-def reset_top() -> int:
-    hidden_count = 0
-    for uid, user_data in users.items():
-        if uid != MAIN_ADMIN_ID and user_data.get("show_in_top", True):
-            user_data["show_in_top"] = False
-            hidden_count += 1
-    save_data()
-    return hidden_count
+def transfer_balance(sender_id: int, receiver_id: int, bot_id: str, amount: float) -> Tuple[bool, str]:
+    if sender_id not in storage.users or receiver_id not in storage.users:
+        return False, "Пользователь не найден"
+
+    sender = storage.users[sender_id]
+    receiver = storage.users[receiver_id]
+
+    if sender.is_frozen.get(bot_id, False):
+        return False, "Ваш счёт заморожен"
+    if receiver.is_frozen.get(bot_id, False):
+        return False, "Счёт получателя заморожен"
+
+    sender_balance = sender.balances.get(bot_id, 0)
+    if sender_balance != float('inf') and sender_balance != "inf":
+        if float(sender_balance) < amount:
+            return False, "Недостаточно средств"
+        sender.balances[bot_id] = float(sender_balance) - amount
+
+    receiver_balance = receiver.balances.get(bot_id, 0)
+    if receiver_balance != float('inf') and receiver_balance != "inf":
+        receiver.balances[bot_id] = float(receiver_balance) + amount
+
+    storage.save()
+    return True, "OK"
+
+def is_admin(user_id: int, bot_id: str) -> bool:
+    if user_id not in storage.users:
+        return False
+    user = storage.users[user_id]
+    return user.is_admin.get(bot_id, False) or user.is_owner.get(bot_id, False)
+
+def is_owner(user_id: int, bot_id: str) -> bool:
+    if user_id not in storage.users:
+        return False
+    return storage.users[user_id].is_owner.get(bot_id, False)
+
+def is_main_admin(user_id: int) -> bool:
+    return user_id == MAIN_ADMIN_ID
+
+def is_moderator(user_id: int, bot_id: str) -> bool:
+    if user_id not in storage.users:
+        return False
+    user = storage.users[user_id]
+    return user.is_moderator.get(bot_id, False) or is_admin(user_id, bot_id)
 
 def find_user_by_input(input_str: str) -> Optional[int]:
     input_str = input_str.strip().lstrip('@').lower()
     try:
-        potential_uid = int(input_str)
-        if potential_uid in users:
-            return potential_uid
+        uid = int(input_str)
+        if uid in storage.users:
+            return uid
     except ValueError:
         pass
-    for uid, data in users.items():
-        if data["username"].lower() == input_str or data["name"].lower() == input_str:
+    for uid, data in storage.users.items():
+        if data.username.lower() == input_str or data.name.lower() == input_str:
             return uid
     return None
 
-# ====================== Keyboard builders ======================
+# ====================== TAKES ======================
+def get_takes_count_24h(user_id: int, bot_id: str) -> int:
+    if user_id not in storage.users:
+        return 0
+    user = storage.users[user_id]
+    timestamps = user.takes_timestamps.get(bot_id, [])
+    now = datetime.now()
+    cutoff = now - timedelta(hours=24)
+    valid = [ts for ts in timestamps if datetime.fromisoformat(ts) > cutoff]
+    user.takes_timestamps[bot_id] = valid
+    return len(valid)
 
-def build_main_menu() -> InlineKeyboardMarkup:
+def can_send_take(user_id: int, bot_id: str) -> Tuple[bool, int]:
+    bot_config = storage.bots.get(bot_id)
+    if not bot_config:
+        return False, 0
+    count = get_takes_count_24h(user_id, bot_id)
+    remaining = bot_config.max_takes_per_day - count
+    return remaining > 0, max(0, remaining)
+
+def add_take_timestamp(user_id: int, bot_id: str):
+    if user_id not in storage.users:
+        return
+    user = storage.users[user_id]
+    if bot_id not in user.takes_timestamps:
+        user.takes_timestamps[bot_id] = []
+    user.takes_timestamps[bot_id].append(datetime.now().isoformat())
+    storage.save()
+
+# ====================== EXCHANGE RATES ======================
+def get_exchange_rate(bot_id: str) -> float:
+    if storage.exchange_rates.rates_locked:
+        bot_config = storage.bots.get(bot_id)
+        return bot_config.base_exchange_rate if bot_config else 0.5
+    return storage.exchange_rates.rates.get(bot_id, 0.5)
+
+def convert_currency(user_id: int, from_bot: str, to_bot: str, amount: float) -> Tuple[bool, float, str]:
+    if user_id not in storage.users:
+        return False, 0, "Пользователь не найден"
+
+    user = storage.users[user_id]
+    from_balance = user.balances.get(from_bot, 0)
+
+    if from_balance == float('inf') or from_balance == "inf":
+        return False, 0, "Владельцы не могут конвертировать"
+
+    if float(from_balance) < amount:
+        return False, 0, "Недостаточно средств"
+
+    from_rate = get_exchange_rate(from_bot)
+    to_rate = get_exchange_rate(to_bot)
+    converted = amount * from_rate / to_rate
+
+    user.balances[from_bot] = float(from_balance) - amount
+
+    to_balance = user.balances.get(to_bot, 0)
+    if to_balance != float('inf') and to_balance != "inf":
+        user.balances[to_bot] = float(to_balance) + converted
+
+    storage.save()
+    return True, converted, "OK"
+
+def reset_exchange_rates():
+    storage.exchange_rates.rates_locked = True
+    storage.exchange_rates.rates = {"main": 1.0}
+    for bot_id, config in storage.bots.items():
+        if bot_id != "main":
+            storage.exchange_rates.rates[bot_id] = config.base_exchange_rate
+    storage.save()
+
+# ====================== KEYBOARDS ======================
+def build_main_menu(bot_id: str) -> InlineKeyboardMarkup:
+    bot_config = storage.bots.get(bot_id)
+    if not bot_config:
+        return InlineKeyboardMarkup(inline_keyboard=[])
+
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="Заработать луны", callback_data="earn"),
-        InlineKeyboardButton(text="Перевести", callback_data="transfer")
+        InlineKeyboardButton(text="💰 Заработать", callback_data="earn"),
+        InlineKeyboardButton(text="💸 Перевести", callback_data="transfer")
     )
     builder.row(
-        InlineKeyboardButton(text="Топ", callback_data="top"),
-        InlineKeyboardButton(text="Мой баланс", callback_data="balance")
+        InlineKeyboardButton(text="🏆 Топ", callback_data="top"),
+        InlineKeyboardButton(text="💳 Баланс", callback_data="balance")
     )
-    builder.row(
-        InlineKeyboardButton(text="📝 Отправить тейк", callback_data="send_take"),
-        InlineKeyboardButton(text="📦 Добавить товар", callback_data="add_product")
-    )
-    builder.row(
-        InlineKeyboardButton(text="🛒 Магазин", callback_data="shop")
-    )
-    return builder.as_markup()
 
-def build_shop_menu() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="📢 Пиар", callback_data="promo_regular"))
-    builder.row(InlineKeyboardButton(text="📌 Пиар с закрепом", callback_data="promo_pinned"))
-    builder.row(InlineKeyboardButton(text="🛍 Купить товар", callback_data="buy_product"))
-    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_main"))
-    return builder.as_markup()
+    if "takes" in bot_config.modules:
+        builder.row(InlineKeyboardButton(text="📝 Отправить тейк", callback_data="send_take"))
 
-def build_earn_menu() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="Перейти в канал", url=CHANNEL_URL),
-        InlineKeyboardButton(text="Викторина", callback_data="quiz_start")
-    )
-    return builder.as_markup()
-
-def build_admin_switch_menu() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="👤 Режим пользователя", callback_data="user_mode"),
-        InlineKeyboardButton(text="⚙️ Режим администратора", callback_data="admin_mode")
-    )
-    return builder.as_markup()
-
-def build_admin_menu(user_id: int = None) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-
-    if user_id == MAIN_ADMIN_ID:
+    if "shop" in bot_config.modules:
         builder.row(
-            InlineKeyboardButton(text="Скрыть всех из топа", callback_data="admin_reset_top"),
-            InlineKeyboardButton(text="Списать луны", callback_data="admin_deduct_moons")
+            InlineKeyboardButton(text="📦 Добавить товар", callback_data="add_product"),
+            InlineKeyboardButton(text="🛒 Магазин", callback_data="shop")
+        )
+
+    builder.row(
+        InlineKeyboardButton(text="💱 Конвертация", callback_data="convert"),
+        InlineKeyboardButton(text="📊 Курсы", callback_data="rates")
+    )
+
+    if bot_id == "main":
+        builder.row(InlineKeyboardButton(text="🤖 Подключить бота", callback_data="connect_bot"))
+
+    return builder.as_markup()
+
+def build_shop_menu(bot_id: str) -> InlineKeyboardMarkup:
+    bot_config = storage.bots.get(bot_id)
+    builder = InlineKeyboardBuilder()
+
+    if bot_config and "takes" in bot_config.modules:
+        builder.row(InlineKeyboardButton(text="📢 Пиар (10/час)", callback_data="promo_regular"))
+        builder.row(InlineKeyboardButton(text="📌 Пиар с закрепом (25/час)", callback_data="promo_pinned"))
+
+    if bot_config and "shop" in bot_config.modules:
+        builder.row(InlineKeyboardButton(text="🛍 Купить товар", callback_data="buy_product"))
+
+    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="back_main"))
+    return builder.as_markup()
+
+def build_admin_menu(user_id: int, bot_id: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    bot_config = storage.bots.get(bot_id)
+    is_owner_user = is_owner(user_id, bot_id)
+    is_main = is_main_admin(user_id) and bot_id == "main"
+
+    if is_owner_user or is_main:
+        builder.row(
+            InlineKeyboardButton(text="📋 Пользователи", callback_data="adm_users"),
+            InlineKeyboardButton(text="💰 Списать", callback_data="adm_deduct")
         )
         builder.row(
-            InlineKeyboardButton(text="❄️ Заморозить счёт", callback_data="admin_freeze"),
-            InlineKeyboardButton(text="🔥 Разморозить счёт", callback_data="admin_unfreeze")
+            InlineKeyboardButton(text="❄️ Заморозить", callback_data="adm_freeze"),
+            InlineKeyboardButton(text="🔥 Разморозить", callback_data="adm_unfreeze")
         )
-
-    if user_id in ADMIN_IDS:
         builder.row(
-            InlineKeyboardButton(text="Список пользователей", callback_data="admin_list_users"),
-            InlineKeyboardButton(text="📊 Мой баланс", callback_data="admin_balance")
+            InlineKeyboardButton(text="🔧 Цензура", callback_data="adm_censor"),
+            InlineKeyboardButton(text="👮 Модераторы", callback_data="adm_mods")
         )
 
-    if user_id == MAIN_ADMIN_ID:
-        builder.row(InlineKeyboardButton(text="∞ Бесконечный баланс", callback_data="admin_infinite_balance"))
-    elif user_id in ADMIN_IDS:
-        builder.row(InlineKeyboardButton(text="🔁 Обычный баланс", callback_data="admin_normal_balance"))
+        if bot_config and "shop" in bot_config.modules:
+            builder.row(InlineKeyboardButton(text="📁 Темы магазина", callback_data="adm_topics"))
 
-    builder.row(InlineKeyboardButton(text="👤 Обычный режим", callback_data="user_mode"))
+        if is_main:
+            builder.row(
+                InlineKeyboardButton(text="📊 Сбросить курсы", callback_data="adm_reset_rates"),
+                InlineKeyboardButton(text="🔄 Сбросить топ", callback_data="adm_reset_top")
+            )
+
+    builder.row(
+        InlineKeyboardButton(text="💳 Мой баланс", callback_data="adm_balance"),
+        InlineKeyboardButton(text="👤 Пользователь", callback_data="user_mode")
+    )
     return builder.as_markup()
 
-def build_cancel_keyboard() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_action"))
-    return builder.as_markup()
+def build_cancel_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")]
+    ])
 
-def build_transfer_cancel_keyboard() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.row(InlineKeyboardButton(text="❌ Отменить перевод", callback_data="cancel_transfer"))
-    return builder.as_markup()
-
-def build_admin_take_keyboard(user_id: int, channel_msg_id: str, is_blocked: bool) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    
-    if is_blocked:
-        builder.row(InlineKeyboardButton(
-            text="✅ Разблокировать пользователя", 
-            callback_data=f"unblock_user:{user_id}"
-        ))
-    else:
-        builder.row(InlineKeyboardButton(
-            text="🚫 Заблокировать пользователя", 
-            callback_data=f"block_user:{user_id}"
-        ))
-    
-    builder.row(InlineKeyboardButton(
-        text="🗑 Удалить тейк", 
-        callback_data=f"delete_take:{channel_msg_id}"
-    ))
-    
-    return builder.as_markup()
-
-def build_promo_confirm_keyboard() -> InlineKeyboardMarkup:
+def build_censor_menu() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="✅ Оплатить", callback_data="promo_pay"),
-        InlineKeyboardButton(text="❌ Отменить", callback_data="promo_cancel")
+        InlineKeyboardButton(text="➕ Слово", callback_data="censor_add"),
+        InlineKeyboardButton(text="➖ Слово", callback_data="censor_del")
+    )
+    builder.row(
+        InlineKeyboardButton(text="➕ Маркер", callback_data="marker_add"),
+        InlineKeyboardButton(text="➖ Маркер", callback_data="marker_del")
+    )
+    builder.row(
+        InlineKeyboardButton(text="📋 Список", callback_data="censor_list"),
+        InlineKeyboardButton(text="◀️ Назад", callback_data="admin_mode")
     )
     return builder.as_markup()
 
-def build_purchase_confirm_keyboard(purchase_id: str) -> InlineKeyboardMarkup:
+def build_topics_menu() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="✅ Подтвердить продажу", callback_data=f"confirm_purchase:{purchase_id}"),
-        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_purchase:{purchase_id}")
+        InlineKeyboardButton(text="➕ Добавить", callback_data="topic_add"),
+        InlineKeyboardButton(text="➖ Удалить", callback_data="topic_del")
+    )
+    builder.row(
+        InlineKeyboardButton(text="📋 Список", callback_data="topic_list"),
+        InlineKeyboardButton(text="◀️ Назад", callback_data="admin_mode")
     )
     return builder.as_markup()
 
-# ====================== Take Forwarding ======================
-
-async def forward_take_to_channel(message: types.Message, user_id: int) -> Optional[types.Message]:
-    try:
-        sent_message = None
-        
-        if message.photo:
-            raw_caption = message.caption or ""
-            censored_caption, has_profanity = censor_profanity(raw_caption)
-            sent_message = await bot.send_photo(
-                TAKES_CHANNEL,
-                photo=message.photo[-1].file_id,
-                caption=censored_caption if has_profanity else raw_caption,
-                parse_mode="HTML" if has_profanity else None,
-            )
-
-        elif message.video:
-            raw_caption = message.caption or ""
-            censored_caption, has_profanity = censor_profanity(raw_caption)
-            sent_message = await bot.send_video(
-                TAKES_CHANNEL,
-                video=message.video.file_id,
-                caption=censored_caption if has_profanity else raw_caption,
-                parse_mode="HTML" if has_profanity else None,
-            )
-
-        elif message.document:
-            raw_caption = message.caption or ""
-            censored_caption, has_profanity = censor_profanity(raw_caption)
-            sent_message = await bot.send_document(
-                TAKES_CHANNEL,
-                document=message.document.file_id,
-                caption=censored_caption if has_profanity else raw_caption,
-                parse_mode="HTML" if has_profanity else None,
-            )
-
-        elif message.animation:
-            raw_caption = message.caption or ""
-            censored_caption, has_profanity = censor_profanity(raw_caption)
-            sent_message = await bot.send_animation(
-                TAKES_CHANNEL,
-                animation=message.animation.file_id,
-                caption=censored_caption if has_profanity else raw_caption,
-                parse_mode="HTML" if has_profanity else None,
-            )
-
-        elif message.voice:
-            raw_caption = message.caption or ""
-            censored_caption, has_profanity = censor_profanity(raw_caption)
-            sent_message = await bot.send_voice(
-                TAKES_CHANNEL,
-                voice=message.voice.file_id,
-                caption=censored_caption if has_profanity else raw_caption,
-                parse_mode="HTML" if has_profanity else None,
-            )
-
-        elif message.audio:
-            raw_caption = message.caption or ""
-            censored_caption, has_profanity = censor_profanity(raw_caption)
-            sent_message = await bot.send_audio(
-                TAKES_CHANNEL,
-                audio=message.audio.file_id,
-                caption=censored_caption if has_profanity else raw_caption,
-                parse_mode="HTML" if has_profanity else None,
-            )
-
-        elif message.sticker:
-            sent_message = await bot.send_sticker(TAKES_CHANNEL, sticker=message.sticker.file_id)
-
-        else:
-            raw_text = message.text or ""
-            censored_text, has_profanity = censor_profanity(raw_text)
-            sent_message = await bot.send_message(
-                TAKES_CHANNEL,
-                censored_text if has_profanity else raw_text,
-                parse_mode="HTML" if has_profanity else None,
-            )
-
-        if sent_message:
-            await send_take_to_admin(message, user_id, sent_message.message_id)
-        
-        return sent_message
-    except Exception as e:
-        logger.error(f"Error forwarding take to channel: {e}")
-        return None
-
-async def send_take_to_admin(original_message: types.Message, user_id: int, channel_msg_id: int):
-    try:
-        user = users.get(user_id, {})
-        username = user.get('username', 'unknown')
-        name = user.get('name', 'Unknown')
-        is_blocked = is_user_blocked(user_id)
-        
-        admin_text = (
-            f"📩 Новый тейк\n\n"
-            f"👤 От: @{username} ({name})\n"
-            f"🆔 ID: {user_id}\n"
-            f"🚫 Заблокирован: {'Да' if is_blocked else 'Нет'}\n"
-        )
-        
-        sent_takes[str(channel_msg_id)] = {
-            'user_id': user_id,
-            'timestamp': datetime.now().isoformat()
-        }
-        save_data()
-        
-        for admin_id in ADMIN_IDS:
-            try:
-                await bot.send_message(admin_id, admin_text)
-                await original_message.forward(admin_id)
-                await bot.send_message(
-                    admin_id, 
-                    "Действия:",
-                    reply_markup=build_admin_take_keyboard(user_id, str(channel_msg_id), is_blocked)
-                )
-            except Exception as e:
-                logger.error(f"Error sending to admin {admin_id}: {e}")
-                
-    except Exception as e:
-        logger.error(f"Error sending take to admin: {e}")
-
-def message_contains_take_hashtag(message: types.Message) -> bool:
-    text = ""
-    if message.text:
-        text = message.text.lower()
-    elif message.caption:
-        text = message.caption.lower()
-    return "#тейк" in text
-
-def message_contains_shop_hashtag(message: types.Message) -> bool:
-    text = ""
-    if message.text:
-        text = message.text.lower()
-    elif message.caption:
-        text = message.caption.lower()
-    return "#обмен" in text or "#продажа" in text
-
-# ====================== Admin Take Moderation ======================
-
-@dp.callback_query(F.data.startswith("block_user:"))
-async def block_user_callback(callback: types.CallbackQuery) -> None:
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Доступ запрещен", show_alert=True)
-        return
-    
-    user_id = int(callback.data.split(":")[1])
-    block_user(user_id)
-    
-    channel_msg_id = None
-    for msg_id, data in sent_takes.items():
-        if data['user_id'] == user_id:
-            channel_msg_id = msg_id
-            break
-    
-    await callback.message.edit_reply_markup(
-        reply_markup=build_admin_take_keyboard(user_id, channel_msg_id or "0", True)
+def build_mods_menu() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="➕ Назначить", callback_data="mod_add"),
+        InlineKeyboardButton(text="➖ Снять", callback_data="mod_del")
     )
-    await callback.answer(f"Пользователь {user_id} заблокирован", show_alert=True)
-
-@dp.callback_query(F.data.startswith("unblock_user:"))
-async def unblock_user_callback(callback: types.CallbackQuery) -> None:
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Доступ запрещен", show_alert=True)
-        return
-    
-    user_id = int(callback.data.split(":")[1])
-    unblock_user(user_id)
-    
-    channel_msg_id = None
-    for msg_id, data in sent_takes.items():
-        if data['user_id'] == user_id:
-            channel_msg_id = msg_id
-            break
-    
-    await callback.message.edit_reply_markup(
-        reply_markup=build_admin_take_keyboard(user_id, channel_msg_id or "0", False)
+    builder.row(
+        InlineKeyboardButton(text="📋 Список", callback_data="mod_list"),
+        InlineKeyboardButton(text="◀️ Назад", callback_data="admin_mode")
     )
-    await callback.answer(f"Пользователь {user_id} разблокирован", show_alert=True)
+    return builder.as_markup()
 
-@dp.callback_query(F.data.startswith("delete_take:"))
-async def delete_take_callback(callback: types.CallbackQuery) -> None:
-    if callback.from_user.id not in ADMIN_IDS:
-        await callback.answer("Доступ запрещен", show_alert=True)
-        return
-    
-    channel_msg_id = callback.data.split(":")[1]
-    
-    try:
-        await bot.delete_message(TAKES_CHANNEL, int(channel_msg_id))
-        if channel_msg_id in sent_takes:
-            del sent_takes[channel_msg_id]
-            save_data()
-        await callback.answer("Тейк удалён из канала", show_alert=True)
-        await callback.message.edit_text("✅ Тейк был удалён из канала")
-    except Exception as e:
-        logger.error(f"Error deleting take: {e}")
-        await callback.answer(f"Ошибка удаления: {e}", show_alert=True)
+def build_currency_kb(exclude: str = None) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for bot_id, config in storage.bots.items():
+        if bot_id != exclude:
+            builder.row(InlineKeyboardButton(
+                text=f"{config.currency_name} {config.currency_emoji}",
+                callback_data=f"cur_{bot_id}"
+            ))
+    builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"))
+    return builder.as_markup()
 
-# ====================== Freeze Account ======================
+def build_modules_kb() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="📝 Только тейки", callback_data="mod_takes"))
+    builder.row(InlineKeyboardButton(text="🛒 Только магазин", callback_data="mod_shop"))
+    builder.row(InlineKeyboardButton(text="📝🛒 Всё", callback_data="mod_all"))
+    builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"))
+    return builder.as_markup()
 
-@dp.callback_query(F.data == "admin_freeze")
-async def admin_freeze_start(callback: types.CallbackQuery, state: FSMContext) -> None:
-    if callback.from_user.id != MAIN_ADMIN_ID:
-        await callback.answer("Доступ запрещен", show_alert=True)
-        return
-    
-    await callback.message.edit_text(
-        "Введите username, ID или имя пользователя для заморозки счёта:",
-        reply_markup=build_cancel_keyboard()
+def build_topic_select_kb(bot_id: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    config = storage.bots.get(bot_id)
+    if config and config.shop_topics:
+        for topic in config.shop_topics:
+            builder.row(InlineKeyboardButton(
+                text=topic['name'],
+                callback_data=f"topic_sel_{topic['thread_id']}"
+            ))
+    builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"))
+    return builder.as_markup()
+
+def build_take_mod_kb(take_id: str, user_id: int, blocked: bool) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ Отправить", callback_data=f"take_ok_{take_id}"),
+        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"take_no_{take_id}")
     )
-    await state.set_state(AdminStates.WaitingUsernameForFreeze)
-    await callback.answer()
-
-@dp.message(AdminStates.WaitingUsernameForFreeze)
-async def admin_freeze_process(message: types.Message, state: FSMContext) -> None:
-    if message.from_user.id != MAIN_ADMIN_ID:
-        await state.clear()
-        return
-    
-    user_id = find_user_by_input(message.text)
-    
-    if user_id is None:
-        await message.answer("Пользователь не найден. Попробуйте ещё раз или нажмите отмену.", reply_markup=build_cancel_keyboard())
-        return
-    
-    freeze_account(user_id)
-    user = users.get(user_id, {})
-    await message.answer(
-        f"❄️ Счёт пользователя @{user.get('username', user_id)} заморожен!\n"
-        f"Он не сможет отправлять и получать переводы.",
-        reply_markup=build_admin_menu(message.from_user.id)
-    )
-    await state.clear()
-
-@dp.callback_query(F.data == "admin_unfreeze")
-async def admin_unfreeze_start(callback: types.CallbackQuery, state: FSMContext) -> None:
-    if callback.from_user.id != MAIN_ADMIN_ID:
-        await callback.answer("Доступ запрещен", show_alert=True)
-        return
-    
-    frozen_list = "\n".join([f"ID: {uid}" for uid in frozen_accounts]) if frozen_accounts else "Нет замороженных счетов"
-    
-    await callback.message.edit_text(
-        f"Замороженные счета:\n{frozen_list}\n\n"
-        "Введите username, ID или имя пользователя для разморозки:",
-        reply_markup=build_cancel_keyboard()
-    )
-    await state.set_state(AdminStates.WaitingUsernameForUnfreeze)
-    await callback.answer()
-
-@dp.message(AdminStates.WaitingUsernameForUnfreeze)
-async def admin_unfreeze_process(message: types.Message, state: FSMContext) -> None:
-    if message.from_user.id != MAIN_ADMIN_ID:
-        await state.clear()
-        return
-    
-    user_id = find_user_by_input(message.text)
-    
-    if user_id is None:
-        await message.answer("Пользователь не найден. Попробуйте ещё раз или нажмите отмену.", reply_markup=build_cancel_keyboard())
-        return
-    
-    unfreeze_account(user_id)
-    user = users.get(user_id, {})
-    await message.answer(
-        f"🔥 Счёт пользователя @{user.get('username', user_id)} разморожен!",
-        reply_markup=build_admin_menu(message.from_user.id)
-    )
-    await state.clear()
-
-# ====================== Transfer with Message ======================
-
-@dp.callback_query(F.data == "transfer")
-async def transfer_start(callback: types.CallbackQuery, state: FSMContext) -> None:
-    uid = callback.from_user.id
-    
-    if is_account_frozen(uid):
-        await callback.answer("❄️ Ваш счёт заморожен! Переводы недоступны.", show_alert=True)
-        return
-    
-    visible_users = []
-    for user_id, u in users.items():
-        if user_id != MAIN_ADMIN_ID and user_id != callback.from_user.id:
-            display_name = f"@{u['username']}" if not u['username'].startswith('user') else f"{u['name']} (ID: {user_id})"
-            frozen_mark = " ❄️" if is_account_frozen(user_id) else ""
-            visible_users.append(f"{display_name}{frozen_mark}")
-
-    if not visible_users:
-        await callback.message.edit_text(
-            "Пока нет других пользователей для перевода.",
-            reply_markup=build_main_menu()
-        )
-        await callback.answer()
-        return
-
-    text = "Пользователи:\n" + "\n".join(visible_users)
-    text += "\n\n❄️ - замороженный счёт\n\nВыберите получателя (введите username без @ или ID):"
-    await callback.message.edit_text(text, reply_markup=build_transfer_cancel_keyboard())
-    await state.set_state(TransferStates.WaitingReceiver)
-    await callback.answer()
-
-@dp.callback_query(F.data == "cancel_transfer")
-async def cancel_transfer(callback: types.CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
-    await callback.message.edit_text("Перевод отменён. Выбор действия:", reply_markup=build_main_menu())
-    await callback.answer("Перевод отменён")
-
-@dp.message(TransferStates.WaitingReceiver)
-async def receive_receiver(message: types.Message, state: FSMContext) -> None:
-    sender_uid = message.from_user.id
-    receiver_uid = find_user_by_input(message.text)
-
-    if receiver_uid is None:
-        await message.answer("Пользователь не найден. Попробуйте ещё раз:", reply_markup=build_transfer_cancel_keyboard())
-        return
-
-    if receiver_uid == sender_uid:
-        await message.answer("Нельзя перевести самому себе.", reply_markup=build_transfer_cancel_keyboard())
-        return
-    
-    if is_account_frozen(receiver_uid):
-        await message.answer("❄️ Счёт получателя заморожен. Перевод невозможен.", reply_markup=build_transfer_cancel_keyboard())
-        return
-
-    await state.update_data(receiver_uid=receiver_uid)
-    await message.answer(
-        "Введите сумму перевода.\n"
-        "Можете также добавить сообщение на следующей строке:\n\n"
-        "Пример:\n100\nСпасибо за помощь!",
-        reply_markup=build_transfer_cancel_keyboard()
-    )
-    await state.set_state(TransferStates.WaitingAmountAndMessage)
-
-@dp.message(TransferStates.WaitingAmountAndMessage)
-async def receive_amount_and_message(message: types.Message, state: FSMContext) -> None:
-    sender_uid = message.from_user.id
-    lines = message.text.strip().split('\n', 1)
-    
-    try:
-        amount = int(lines[0].strip())
-        if amount <= 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("Введите корректное положительное число в первой строке.", reply_markup=build_transfer_cancel_keyboard())
-        return
-    
-    transfer_message = lines[1].strip() if len(lines) > 1 else ""
-
-    data = await state.get_data()
-    receiver_uid = data.get("receiver_uid")
-
-    if receiver_uid not in users:
-        await message.answer("Получатель не найден. Отмена операции.", reply_markup=build_main_menu())
-        await state.clear()
-        return
-
-    if transfer_moons(sender_uid, receiver_uid, amount):
-        await message.answer(
-            f"✅ Вы успешно перевели {amount} 🌗 пользователю @{users[receiver_uid]['username']}.",
-            reply_markup=build_main_menu()
-        )
-        
-        notification = f"🎉 Вам перевели {amount} 🌗 от @{users[sender_uid]['username']}!"
-        if transfer_message:
-            notification += f"\n\n💬 Сообщение: {transfer_message}"
-        
-        try:
-            await bot.send_message(receiver_uid, notification)
-        except:
-            pass
+    if blocked:
+        builder.row(InlineKeyboardButton(text="🔓 Разблокировать", callback_data=f"unblock_{user_id}"))
     else:
-        if is_account_frozen(sender_uid):
-            await message.answer("❄️ Ваш счёт заморожен!", reply_markup=build_main_menu())
-        else:
-            await message.answer("Недостаточно лун на счёте.", reply_markup=build_main_menu())
-
-    await state.clear()
-
-# ====================== Add Product ======================
-
-@dp.callback_query(F.data == "add_product")
-async def add_product_start(callback: types.CallbackQuery, state: FSMContext) -> None:
-    await callback.message.edit_text(
-        "📦 Добавление товара\n\n"
-        "Отправьте изображение товара.\n"
-        "⚠️ Не забудьте добавить #обмен или #продажа в описание!",
-        reply_markup=build_cancel_keyboard()
-    )
-    await state.set_state(ProductStates.WaitingProductImage)
-    await callback.answer()
-
-@dp.message(ProductStates.WaitingProductImage)
-async def product_receive_image(message: types.Message, state: FSMContext) -> None:
-    if not message.photo and not message.document:
-        await message.answer("Пожалуйста, отправьте изображение.", reply_markup=build_cancel_keyboard())
-        return
-    
-    if not message_contains_shop_hashtag(message):
-        await message.answer(
-            "⚠️ Добавьте #обмен или #продажа в описание изображения!\n\n"
-            "Отправьте изображение ещё раз с правильным описанием.",
-            reply_markup=build_cancel_keyboard()
-        )
-        return
-    
-    if message.photo:
-        file_id = message.photo[-1].file_id
-    else:
-        file_id = message.document.file_id
-    
-    await state.update_data(product_image=file_id, product_caption=message.caption or "")
-    await message.answer("Укажите цену товара:", reply_markup=build_cancel_keyboard())
-    await state.set_state(ProductStates.WaitingProductPrice)
-
-@dp.message(ProductStates.WaitingProductPrice)
-async def product_receive_price(message: types.Message, state: FSMContext) -> None:
-    price = message.text.strip()
-    await state.update_data(product_price=price)
-    await message.answer("Укажите контакт для связи (username, ссылка и т.д.):", reply_markup=build_cancel_keyboard())
-    await state.set_state(ProductStates.WaitingProductContact)
-
-@dp.message(ProductStates.WaitingProductContact)
-async def product_receive_contact(message: types.Message, state: FSMContext) -> None:
-    contact = message.text.strip()
-    data = await state.get_data()
-    
-    caption = (
-        f"{data['product_caption']}\n\n"
-        f"💰 Цена: {data['product_price']}\n"
-        f"📞 Контакт: {contact}"
-    )
-    
-    try:
-        await bot.send_photo(
-            SHOP_CHANNEL,
-            photo=data['product_image'],
-            caption=caption
-        )
-        await message.answer(
-            "✅ Ваш товар успешно добавлен в магазин!",
-            reply_markup=build_main_menu()
-        )
-    except Exception as e:
-        logger.error(f"Error sending product: {e}")
-        await message.answer(
-            "❌ Ошибка при добавлении товара.",
-            reply_markup=build_main_menu()
-        )
-    
-    await state.clear()
-
-# ====================== Auto forward shop messages ======================
-
-@dp.message(F.text.contains("#обмен") | F.caption.contains("#обмен") | F.text.contains("#продажа") | F.caption.contains("#продажа"))
-async def auto_forward_shop(message: types.Message, state: FSMContext) -> None:
-    current_state = await state.get_state()
-    if current_state:
-        return
-    
-    try:
-        if message.photo:
-            await bot.send_photo(
-                SHOP_CHANNEL,
-                photo=message.photo[-1].file_id,
-                caption=message.caption
-            )
-        elif message.text:
-            await bot.send_message(SHOP_CHANNEL, message.text)
-        
-        await message.answer("✅ Ваше объявление автоматически отправлено в магазин!")
-    except Exception as e:
-        logger.error(f"Error auto-forwarding shop message: {e}")
-
-# ====================== Shop Menu ======================
-
-@dp.callback_query(F.data == "shop")
-async def shop_menu(callback: types.CallbackQuery) -> None:
-    await callback.message.edit_text(
-        "🛒 Магазин\n\nВыберите действие:",
-        reply_markup=build_shop_menu()
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "back_to_main")
-async def back_to_main(callback: types.CallbackQuery) -> None:
-    await callback.message.edit_text("Выбор действия:", reply_markup=build_main_menu())
-    await callback.answer()
-
-# ====================== Promo ======================
-
-@dp.callback_query(F.data.startswith("promo_"))
-async def promo_start(callback: types.CallbackQuery, state: FSMContext) -> None:
-    if callback.data == "promo_cancel":
-        await callback.message.edit_text("Выбор действия:", reply_markup=build_main_menu())
-        await state.clear()
-        await callback.answer()
-        return
-    
-    if callback.data == "promo_pay":
-        await promo_pay(callback, state)
-        return
-    
-    is_pinned = callback.data == "promo_pinned"
-    price_per_hour = PROMO_PIN_PRICE_PER_HOUR if is_pinned else PROMO_PRICE_PER_HOUR
-    
-    await state.update_data(is_pinned=is_pinned, price_per_hour=price_per_hour)
-    
-    await callback.message.edit_text(
-        f"📢 {'Пиар с закрепом' if is_pinned else 'Пиар'}\n\n"
-        f"💰 Стоимость: {price_per_hour} лун/час\n\n"
-        f"Укажите количество часов:",
-        reply_markup=build_cancel_keyboard()
-    )
-    await state.set_state(PromoStates.WaitingHours)
-    await callback.answer()
-
-@dp.message(PromoStates.WaitingHours)
-async def promo_receive_hours(message: types.Message, state: FSMContext) -> None:
-    try:
-        hours = int(message.text.strip())
-        if hours <= 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("Введите корректное положительное число часов.", reply_markup=build_cancel_keyboard())
-        return
-    
-    await state.update_data(hours=hours)
-    await message.answer(
-        "Отправьте ваш пиар пост (текст, фото и т.д.):",
-        reply_markup=build_cancel_keyboard()
-    )
-    await state.set_state(PromoStates.WaitingPromoPost)
-
-@dp.message(PromoStates.WaitingPromoPost)
-async def promo_receive_post(message: types.Message, state: FSMContext) -> None:
-    data = await state.get_data()
-    hours = data['hours']
-    price_per_hour = data['price_per_hour']
-    total_cost = hours * price_per_hour
-    
-    post_data = {
-        'text': message.text,
-        'caption': message.caption,
-        'photo': message.photo[-1].file_id if message.photo else None,
-        'video': message.video.file_id if message.video else None,
-        'document': message.document.file_id if message.document else None,
-    }
-    
-    await state.update_data(post_data=post_data, total_cost=total_cost)
-    
-    user_balance = get_user_balance(message.from_user.id)
-    balance_str = "∞" if user_balance == float('inf') else str(user_balance)
-    
-    await message.answer(
-        f"📋 Подтверждение заказа\n\n"
-        f"⏱ Длительность: {hours} ч.\n"
-        f"💰 К оплате: {total_cost} 🌗\n"
-        f"💳 Ваш баланс: {balance_str} 🌗\n\n"
-        f"{'📌 С закреплением' if data['is_pinned'] else ''}",
-        reply_markup=build_promo_confirm_keyboard()
-    )
-    await state.set_state(PromoStates.WaitingConfirmation)
-
-async def promo_pay(callback: types.CallbackQuery, state: FSMContext) -> None:
-    data = await state.get_data()
-    user_id = callback.from_user.id
-    total_cost = data['total_cost']
-    
-    user_balance = get_user_balance(user_id)
-    
-    if user_balance != float('inf') and user_balance < total_cost:
-        await callback.answer("Недостаточно лун на счёте!", show_alert=True)
-        return
-    
-    if user_balance != float('inf'):
-        deduct_moons(user_id, total_cost)
-    
-    post_data = data['post_data']
-    hours = data['hours']
-    is_pinned = data['is_pinned']
-    
-    try:
-        sent_msg = None
-        if post_data['photo']:
-            sent_msg = await bot.send_photo(
-                TAKES_CHANNEL,
-                photo=post_data['photo'],
-                caption=post_data['caption']
-            )
-        elif post_data['video']:
-            sent_msg = await bot.send_video(
-                TAKES_CHANNEL,
-                video=post_data['video'],
-                caption=post_data['caption']
-            )
-        elif post_data['text']:
-            sent_msg = await bot.send_message(TAKES_CHANNEL, post_data['text'])
-        
-        if sent_msg and is_pinned:
-            try:
-                await bot.pin_chat_message(TAKES_CHANNEL, sent_msg.message_id)
-            except Exception as e:
-                logger.error(f"Error pinning message: {e}")
-        
-        if sent_msg:
-            async def delete_after_delay():
-                await asyncio.sleep(hours * 3600)
-                try:
-                    if is_pinned:
-                        await bot.unpin_chat_message(TAKES_CHANNEL, sent_msg.message_id)
-                    await bot.delete_message(TAKES_CHANNEL, sent_msg.message_id)
-                except Exception as e:
-                    logger.error(f"Error deleting promo: {e}")
-            
-            task = asyncio.create_task(delete_after_delay())
-            scheduled_deletions[str(sent_msg.message_id)] = task
-        
-        await callback.message.edit_text(
-            f"✅ Пиар успешно оплачен и размещён!\n"
-            f"Пост будет удалён через {hours} ч.",
-            reply_markup=build_main_menu()
-        )
-    except Exception as e:
-        logger.error(f"Error posting promo: {e}")
-        add_moons(user_id, total_cost)
-        await callback.message.edit_text(
-            "❌ Ошибка при размещении. Луны возвращены.",
-            reply_markup=build_main_menu()
-        )
-    
-    await state.clear()
-    await callback.answer()
-
-# ====================== Buy Product ======================
-
-@dp.callback_query(F.data == "buy_product")
-async def buy_product_start(callback: types.CallbackQuery, state: FSMContext) -> None:
-    await callback.message.edit_text(
-        "🛍 Покупка товара\n\n"
-        "Отправьте изображение товара, который хотите купить:",
-        reply_markup=build_cancel_keyboard()
-    )
-    await state.set_state(PurchaseStates.WaitingProductImage)
-    await callback.answer()
-
-@dp.message(PurchaseStates.WaitingProductImage)
-async def purchase_receive_image(message: types.Message, state: FSMContext) -> None:
-    if not message.photo:
-        await message.answer("Пожалуйста, отправьте изображение товара.", reply_markup=build_cancel_keyboard())
-        return
-    
-    await state.update_data(product_image=message.photo[-1].file_id)
-    await message.answer(
-        "Введите username, ID или имя продавца:",
-        reply_markup=build_cancel_keyboard()
-    )
-    await state.set_state(PurchaseStates.WaitingSellerInfo)
-
-@dp.message(PurchaseStates.WaitingSellerInfo)
-async def purchase_receive_seller(message: types.Message, state: FSMContext) -> None:
-    seller_id = find_user_by_input(message.text)
-    
-    if seller_id is None:
-        await message.answer("Продавец не найден. Попробуйте ещё раз.", reply_markup=build_cancel_keyboard())
-        return
-    
-    if seller_id == message.from_user.id:
-        await message.answer("Нельзя купить у самого себя.", reply_markup=build_cancel_keyboard())
-        return
-    
-    await state.update_data(seller_id=seller_id)
-    await message.answer(
-        "Введите сумму перевода продавцу (в лунах):",
-        reply_markup=build_cancel_keyboard()
-    )
-    await state.set_state(PurchaseStates.WaitingAmount)
-
-@dp.message(PurchaseStates.WaitingAmount)
-async def purchase_receive_amount(message: types.Message, state: FSMContext) -> None:
-    try:
-        amount = int(message.text.strip())
-        if amount <= 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("Введите корректное положительное число.", reply_markup=build_cancel_keyboard())
-        return
-    
-    data = await state.get_data()
-    buyer_id = message.from_user.id
-    seller_id = data['seller_id']
-    
-    buyer = users.get(buyer_id, {})
-    seller = users.get(seller_id, {})
-    
-    purchase_id = f"{buyer_id}_{seller_id}_{datetime.now().timestamp()}"
-    pending_purchases[purchase_id] = {
-        'buyer_id': buyer_id,
-        'seller_id': seller_id,
-        'amount': amount,
-        'product_image': data['product_image'],
-        'timestamp': datetime.now().isoformat()
-    }
-    save_data()
-    
-    try:
-        buyer_info = f"@{buyer['username']}" if buyer.get('username') and not buyer['username'].startswith('user') else f"{buyer.get('name', 'Unknown')} (ID: {buyer_id})"
-        
-        await bot.send_photo(
-            seller_id,
-            photo=data['product_image'],
-            caption=(
-                f"🛒 Запрос на покупку!\n\n"
-                f"👤 Покупатель: {buyer_info}\n"
-                f"💰 Сумма: {amount} 🌗\n\n"
-                f"Подтвердите продажу:"
-            ),
-            reply_markup=build_purchase_confirm_keyboard(purchase_id)
-        )
-        
-        await message.answer(
-            "✅ Запрос отправлен продавцу!\n"
-            "Ожидайте подтверждения.",
-            reply_markup=build_main_menu()
-        )
-    except Exception as e:
-        logger.error(f"Error sending purchase request: {e}")
-        await message.answer(
-            "❌ Не удалось связаться с продавцом.",
-            reply_markup=build_main_menu()
-        )
-        del pending_purchases[purchase_id]
-        save_data()
-    
-    await state.clear()
-
-@dp.callback_query(F.data.startswith("confirm_purchase:"))
-async def confirm_purchase(callback: types.CallbackQuery) -> None:
-    purchase_id = callback.data.split(":")[1]
-    
-    if purchase_id not in pending_purchases:
-        await callback.answer("Эта покупка уже обработана", show_alert=True)
-        return
-    
-    purchase = pending_purchases[purchase_id]
-    
-    if callback.from_user.id != purchase['seller_id']:
-        await callback.answer("Это не ваша продажа", show_alert=True)
-        return
-    
-    buyer_id = purchase['buyer_id']
-    seller_id = purchase['seller_id']
-    amount = purchase['amount']
-    
-    buyer_balance = get_user_balance(buyer_id)
-    if buyer_balance != float('inf') and buyer_balance < amount:
-        await callback.answer("У покупателя недостаточно лун!", show_alert=True)
-        try:
-            await bot.send_message(buyer_id, "❌ Покупка отменена: недостаточно лун на счёте.")
-        except:
-            pass
-        del pending_purchases[purchase_id]
-        save_data()
-        return
-    
-    if transfer_moons(buyer_id, seller_id, amount):
-        await callback.message.edit_caption(
-            caption=f"✅ Продажа подтверждена!\n💰 Получено: {amount} 🌗"
-        )
-        
-        try:
-            await bot.send_message(
-                buyer_id,
-                f"✅ Продавец подтвердил покупку!\n"
-                f"💰 Списано: {amount} 🌗"
-            )
-        except:
-            pass
-    else:
-        await callback.answer("Ошибка перевода", show_alert=True)
-    
-    del pending_purchases[purchase_id]
-    save_data()
-    await callback.answer()
-
-@dp.callback_query(F.data.startswith("reject_purchase:"))
-async def reject_purchase(callback: types.CallbackQuery) -> None:
-    purchase_id = callback.data.split(":")[1]
-    
-    if purchase_id not in pending_purchases:
-        await callback.answer("Эта покупка уже обработана", show_alert=True)
-        return
-    
-    purchase = pending_purchases[purchase_id]
-    
-    if callback.from_user.id != purchase['seller_id']:
-        await callback.answer("Это не ваша продажа", show_alert=True)
-        return
-    
-    buyer_id = purchase['buyer_id']
-    
-    await callback.message.edit_caption(caption="❌ Продажа отклонена")
-    
-    try:
-        await bot.send_message(buyer_id, "❌ Продавец отклонил покупку.")
-    except:
-        pass
-    
-    del pending_purchases[purchase_id]
-    save_data()
-    await callback.answer()
-
-# ====================== Cancel Action ======================
-
-@dp.callback_query(F.data == "cancel_action")
-async def cancel_action(callback: types.CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
-    await callback.message.edit_text("Выбор действия:", reply_markup=build_main_menu())
-    await callback.answer("Действие отменено")
-
-# ====================== Takes Handlers ======================
-
-@dp.callback_query(F.data == "send_take")
-async def send_take_start(callback: types.CallbackQuery, state: FSMContext) -> None:
-    uid = callback.from_user.id
-
-    if uid not in users:
-        register_user(callback.from_user)
-    
-    if is_user_blocked(uid):
-        await callback.answer("🚫 Вы заблокированы и не можете отправлять тейки.", show_alert=True)
-        return
-
-    can_send, remaining = can_send_take(uid)
-
-    if not can_send:
-        time_until = get_time_until_reset(uid)
-        await callback.answer(
-            f"❌ Вы исчерпали лимит тейков!\nСледующий через: {time_until}",
-            show_alert=True
-        )
-        return
-
-    await callback.message.edit_text(
-        f"📝 **Отправка тейка**\n\n"
-        f"Отправьте ваш тейк (текст, фото, видео и т.д.)\n"
-        f"⚠️ **Обязательно добавьте #тейк в сообщение!**\n\n"
-        f"📊 Осталось тейков сегодня: {remaining}/{MAX_TAKES_PER_DAY}",
-        reply_markup=build_cancel_keyboard(),
-        parse_mode="Markdown"
-    )
-    await state.set_state(TakeStates.WaitingTake)
-    await callback.answer()
-
-@dp.callback_query(F.data == "cancel_take")
-async def cancel_take(callback: types.CallbackQuery, state: FSMContext) -> None:
-    await state.clear()
-    await callback.message.edit_text("Выбор действия:", reply_markup=build_main_menu())
-    await callback.answer("Отправка тейка отменена")
-
-@dp.message(TakeStates.WaitingTake)
-async def process_take(message: types.Message, state: FSMContext) -> None:
-    uid = message.from_user.id
-    
-    if is_user_blocked(uid):
-        await message.answer("🚫 Вы заблокированы.", reply_markup=build_main_menu())
-        await state.clear()
-        return
-
-    can_send, remaining = can_send_take(uid)
-    if not can_send:
-        time_until = get_time_until_reset(uid)
-        await message.answer(
-            f"❌ Вы исчерпали лимит тейков!\nСледующий через: {time_until}",
-            reply_markup=build_main_menu()
-        )
-        await state.clear()
-        return
-
-    if not message_contains_take_hashtag(message):
-        await message.answer(
-            "⚠️ Добавьте #тейк в конец сообщения\n\n"
-            "Отправьте сообщение ещё раз с хештегом #тейк",
-            reply_markup=build_cancel_keyboard()
-        )
-        return
-
-    sent_msg = await forward_take_to_channel(message, uid)
-
-    if sent_msg:
-        add_take_timestamp(uid)
-        _, new_remaining = can_send_take(uid)
-
-        await message.answer(
-            f"✅ Ваш тейк успешно отправлен в канал!\n\n"
-            f"📊 Осталось тейков сегодня: {new_remaining}/{MAX_TAKES_PER_DAY}",
-            reply_markup=build_main_menu()
-        )
-    else:
-        await message.answer(
-            "❌ Ошибка при отправке тейка. Попробуйте позже.",
-            reply_markup=build_main_menu()
-        )
-
-    await state.clear()
-
-# Auto forward takes
-@dp.message(F.text.contains("#тейк") | F.caption.contains("#тейк"))
-async def auto_forward_take(message: types.Message, state: FSMContext) -> None:
-    current_state = await state.get_state()
-    if current_state == TakeStates.WaitingTake:
-        return
-
-    uid = message.from_user.id
-
-    if uid not in users:
-        register_user(message.from_user)
-    
-    if is_user_blocked(uid):
-        await message.answer("🚫 Вы заблокированы и не можете отправлять тейки.")
-        return
-
-    can_send, remaining = can_send_take(uid)
-    if not can_send:
-        time_until = get_time_until_reset(uid)
-        await message.answer(
-            f"❌ Вы исчерпали лимит тейков!\nСледующий через: {time_until}"
-        )
-        return
-
-    sent_msg = await forward_take_to_channel(message, uid)
-
-    if sent_msg:
-        add_take_timestamp(uid)
-        _, new_remaining = can_send_take(uid)
-        await message.answer(
-            f"✅ Ваш тейк автоматически отправлен в канал!\n"
-            f"📊 Осталось тейков сегодня: {new_remaining}/{MAX_TAKES_PER_DAY}"
-        )
-    else:
-        await message.answer("❌ Ошибка при отправке тейка. Попробуйте позже.")
-
-# ====================== Standard Commands ======================
-
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message) -> None:
-    register_user(message.from_user)
-
-    if message.from_user.id in ADMIN_IDS:
-        await message.answer(
-            "👋 Добро пожаловать, администратор! Выберите режим:",
-            reply_markup=build_admin_switch_menu()
-        )
-    else:
-        await message.answer(
-            "👋 Добро пожаловать! Выберите действие:",
-            reply_markup=build_main_menu()
-        )
-
-@dp.message(Command("cancel"))
-async def cancel_handler(message: types.Message, state: FSMContext) -> None:
-    await state.clear()
-    if message.from_user.id in ADMIN_IDS:
-        await message.answer("Действие отменено.", reply_markup=build_admin_menu(message.from_user.id))
-    else:
-        await message.answer("Действие отменено.", reply_markup=build_main_menu())
-
-@dp.message(Command("admin"))
-async def cmd_admin(message: types.Message) -> None:
-    if message.from_user.id in ADMIN_IDS:
-        await message.answer("Панель администратора:", reply_markup=build_admin_menu(message.from_user.id))
-    else:
-        await message.answer("У вас нет прав доступа.")
-
-# ====================== Admin Handlers ======================
-
-@dp.callback_query(F.data == "admin_reset_top")
-async def admin_reset_top_handler(callback: types.CallbackQuery) -> None:
-    if callback.from_user.id == MAIN_ADMIN_ID:
-        hidden_count = reset_top()
-        await callback.answer(f"Топ сброшен! {hidden_count} пользователей скрыто.", show_alert=True)
-        await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu(callback.from_user.id))
-    else:
-        await callback.answer("Доступ запрещен", show_alert=True)
-
-@dp.callback_query(F.data == "admin_list_users")
-async def admin_list_users_handler(callback: types.CallbackQuery) -> None:
-    if callback.from_user.id in ADMIN_IDS:
-        user_list = []
-        for uid, user_data in users.items():
-            if uid != MAIN_ADMIN_ID:
-                display_name = f"@{user_data['username']}" if not user_data['username'].startswith('user') else user_data['name']
-                frozen = "❄️" if is_account_frozen(uid) else ""
-                blocked = "🚫" if is_user_blocked(uid) else ""
-                user_list.append(f"{display_name} - {user_data['moons']} 🌗 {frozen}{blocked}")
-
-        if not user_list:
-            await callback.message.edit_text("Нет пользователей.", reply_markup=build_admin_menu(callback.from_user.id))
-        else:
-            text = "📊 Пользователи:\n❄️-заморожен 🚫-заблокирован\n\n" + "\n".join(user_list)
-            await callback.message.edit_text(text[:4096], reply_markup=build_admin_menu(callback.from_user.id))
-        await callback.answer()
-    else:
-        await callback.answer("Доступ запрещен", show_alert=True)
-
-@dp.callback_query(F.data == "admin_deduct_moons")
-async def admin_deduct_moons_start(callback: types.CallbackQuery, state: FSMContext) -> None:
-    if callback.from_user.id == MAIN_ADMIN_ID:
-        await callback.message.edit_text("Введите username пользователя для списания (без @):", reply_markup=build_cancel_keyboard())
-        await state.set_state(AdminStates.WaitingUsernameForDeduct)
-        await callback.answer()
-    else:
-        await callback.answer("Доступ запрещен", show_alert=True)
-
-@dp.message(AdminStates.WaitingUsernameForDeduct)
-async def admin_receive_username(message: types.Message, state: FSMContext) -> None:
-    if message.from_user.id != MAIN_ADMIN_ID:
-        await state.clear()
-        return
-
-    target_uid = find_user_by_input(message.text)
-    if target_uid is None or target_uid == MAIN_ADMIN_ID:
-        await message.answer("Пользователь не найден. Попробуйте ещё раз:", reply_markup=build_cancel_keyboard())
-        return
-
-    await state.update_data(target_uid=target_uid)
-    await message.answer(f"Сколько лун списать? (баланс: {users[target_uid]['moons']} 🌗)", reply_markup=build_cancel_keyboard())
-    await state.set_state(AdminStates.WaitingAmountForDeduct)
-
-@dp.message(AdminStates.WaitingAmountForDeduct)
-async def admin_receive_amount(message: types.Message, state: FSMContext) -> None:
-    if message.from_user.id != MAIN_ADMIN_ID:
-        await state.clear()
-        return
-
-    try:
-        amount = int(message.text.strip())
-        if amount <= 0:
-            raise ValueError
-    except ValueError:
-        await message.answer("Введите корректное положительное число.", reply_markup=build_cancel_keyboard())
-        return
-
-    data = await state.get_data()
-    target_uid = data.get("target_uid")
-
-    if deduct_moons(target_uid, amount):
-        await message.answer(
-            f"✅ Списано {amount} 🌗. Новый баланс: {users[target_uid]['moons']} 🌗",
-            reply_markup=build_admin_menu(message.from_user.id)
-        )
-    else:
-        await message.answer("Ошибка при списании.", reply_markup=build_admin_menu(message.from_user.id))
-
-    await state.clear()
-
-@dp.callback_query(F.data == "admin_balance")
-async def admin_balance_handler(callback: types.CallbackQuery) -> None:
-    if callback.from_user.id in ADMIN_IDS:
-        moons = get_user_balance(callback.from_user.id)
-        text = f"Ваш баланс - {'∞' if moons == float('inf') else moons} 🌗"
-        await callback.message.edit_text(text, reply_markup=build_admin_menu(callback.from_user.id))
-        await callback.answer()
-    else:
-        await callback.answer("Доступ запрещен", show_alert=True)
-
-@dp.callback_query(F.data == "admin_infinite_balance")
-async def admin_infinite_balance_handler(callback: types.CallbackQuery) -> None:
-    if callback.from_user.id == MAIN_ADMIN_ID:
-        users[callback.from_user.id]["moons"] = float('inf')
-        save_data()
-        await callback.answer("Баланс: ∞", show_alert=True)
-        await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu(callback.from_user.id))
-    else:
-        await callback.answer("Доступ запрещен", show_alert=True)
-
-@dp.callback_query(F.data == "admin_normal_balance")
-async def admin_normal_balance_handler(callback: types.CallbackQuery) -> None:
-    if callback.from_user.id in ADMIN_IDS and callback.from_user.id != MAIN_ADMIN_ID:
-        users[callback.from_user.id]["moons"] = ADMIN_STARTING_BALANCE
-        save_data()
-        await callback.answer(f"Баланс: {ADMIN_STARTING_BALANCE} 🌗", show_alert=True)
-        await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu(callback.from_user.id))
-    else:
-        await callback.answer("Доступ запрещен", show_alert=True)
-
-@dp.callback_query(F.data == "user_mode")
-async def switch_to_user_mode(callback: types.CallbackQuery) -> None:
-    await callback.message.edit_text("Выбор действия:", reply_markup=build_main_menu())
-    await callback.answer()
-
-@dp.callback_query(F.data == "admin_mode")
-async def switch_to_admin_mode(callback: types.CallbackQuery) -> None:
-    if callback.from_user.id in ADMIN_IDS:
-        await callback.message.edit_text("Панель администратора:", reply_markup=build_admin_menu(callback.from_user.id))
-    else:
-        await callback.answer("Нет прав!", show_alert=True)
-    await callback.answer()
-
-# ====================== Other Handlers ======================
-
-@dp.callback_query(F.data == "earn")
-async def earn_lunes(callback: types.CallbackQuery) -> None:
-    await callback.message.edit_text(
-        'Заработайте луны в канале по хештегу "игра" или пройдите викторину',
-        reply_markup=build_earn_menu()
-    )
-    await callback.answer()
-
-@dp.callback_query(F.data == "top")
-async def show_top(callback: types.CallbackQuery) -> None:
-    filtered = []
-    for uid, u in users.items():
-        if uid != MAIN_ADMIN_ID and u.get("show_in_top", True):
-            display_name = f"@{u['username']}" if not u['username'].startswith('user') else u['name']
-            filtered.append((display_name, u["moons"]))
-
-    if not filtered:
-        await callback.message.edit_text("Топ пуст!", reply_markup=build_main_menu())
-        await callback.answer()
-        return
-
-    filtered.sort(key=lambda x: x[1] if x[1] != float('inf') else 0, reverse=True)
-    top10 = filtered[:10]
-
-    text = "🏆 Топ 10 по лунам 🌗:\n"
-    for i, (name, moons) in enumerate(top10, 1):
-        text += f"{i}. {name} - {moons if moons != float('inf') else '∞'} 🌗\n"
-
-    await callback.message.edit_text(text, reply_markup=build_main_menu())
-    await callback.answer()
-
-@dp.callback_query(F.data == "balance")
-async def show_balance(callback: types.CallbackQuery) -> None:
-    uid = callback.from_user.id
-    moons = get_user_balance(uid)
-    can_send, remaining = can_send_take(uid)
-    
-    frozen = "❄️ Счёт заморожен!\n" if is_account_frozen(uid) else ""
-    blocked = "🚫 Вы заблокированы для тейков\n" if is_user_blocked(uid) else ""
-
-    text = f"{frozen}{blocked}Ваш баланс - {'∞' if moons == float('inf') else moons} 🌗\n"
-    text += f"📝 Тейков осталось: {remaining}/{MAX_TAKES_PER_DAY}"
-
-    await callback.message.edit_text(text, reply_markup=build_main_menu())
-    await callback.answer()
-
-# ====================== Quiz ======================
-
-QUIZ_QUESTIONS = {
-    "quiz_q1": {
-        "text": "Первый вопрос: Кто должен был быть на месте Ореолы?",
-        "options": [("Небесный", "quiz_a1_correct"), ("Ледяной", "quiz_a1_wrong"), ("Радужный как есть", "quiz_a1_wrong")]
-    },
-    "quiz_q2": {
-        "text": "Второй вопрос: Кто был отцом Мракокрада?",
-        "options": [("Гений", "quiz_a2_wrong"), ("Вдумчивый", "quiz_a2_wrong"), ("Арктик", "quiz_a2_correct")]
-    },
-    "quiz_q3": {
-        "text": "Третий вопрос: Кто убивал дочерей Коралл?",
-        "options": [("Мальстрём", "quiz_a3_wrong"), ("Орка", "quiz_a3_correct"), ("Акула", "quiz_a3_wrong")]
-    }
+        builder.row(InlineKeyboardButton(text="🚫 Заблокировать", callback_data=f"block_{user_id}"))
+    return builder.as_markup()
+
+def build_promo_confirm_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Оплатить", callback_data="promo_pay"),
+            InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")
+        ]
+    ])
+
+# ====================== QUIZ ======================
+QUIZ = {
+    1: {"q": "Кто должен был быть на месте Ореолы?", "answers": ["Небесный", "Ледяной", "Радужный"], "correct": 0},
+    2: {"q": "Кто был отцом Мракокрада?", "answers": ["Гений", "Вдумчивый", "Арктик"], "correct": 2},
+    3: {"q": "Кто убивал дочерей Коралл?", "answers": ["Мальстрём", "Орка", "Акула"], "correct": 1},
 }
 
-@dp.callback_query(F.data == "quiz_start")
-async def quiz_start(callback: types.CallbackQuery) -> None:
-    uid = callback.from_user.id
-    if uid not in users:
-        register_user(callback.from_user)
-    
-    if users[uid]["quiz_passed"]:
-        await callback.answer("Вы уже прошли викторину", show_alert=True)
-        return
-
+def build_quiz_kb(q_num: int) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="Начать", callback_data="quiz_q1"),
-        InlineKeyboardButton(text="Отмена", callback_data="quiz_cancel")
-    )
-    await callback.message.edit_text("Готовы?", reply_markup=builder.as_markup())
-    await callback.answer()
+    for i, ans in enumerate(QUIZ[q_num]["answers"]):
+        builder.row(InlineKeyboardButton(text=ans, callback_data=f"quiz_{q_num}_{i}"))
+    return builder.as_markup()
 
-@dp.callback_query(F.data == "quiz_cancel")
-async def quiz_cancel(callback: types.CallbackQuery) -> None:
-    await callback.message.edit_text("Выбор действия:", reply_markup=build_main_menu())
-    await callback.answer()
+# ====================== FORWARD TAKE ======================
+async def forward_take(message: types.Message, bot_id: str, bot_instance: Bot) -> Optional[types.Message]:
+    try:
+        config = storage.bots.get(bot_id)
+        if not config or not config.takes_channel:
+            return None
 
-@dp.callback_query(F.data.startswith("quiz_q"))
-async def quiz_questions(callback: types.CallbackQuery) -> None:
-    q = callback.data
-    if q in QUIZ_QUESTIONS:
-        question_data = QUIZ_QUESTIONS[q]
-        builder = InlineKeyboardBuilder()
-        for option_text, callback_data in question_data["options"]:
-            builder.row(InlineKeyboardButton(text=option_text, callback_data=callback_data))
-        await callback.message.edit_text(question_data["text"], reply_markup=builder.as_markup())
+        text = message.text or message.caption or ""
+        censored, has_prof = censor_profanity(text, bot_id)
+
+        if message.photo:
+            return await bot_instance.send_photo(
+                config.takes_channel,
+                photo=message.photo[-1].file_id,
+                caption=censored if has_prof else text,
+                parse_mode="HTML" if has_prof else None
+            )
+        elif message.video:
+            return await bot_instance.send_video(
+                config.takes_channel,
+                video=message.video.file_id,
+                caption=censored if has_prof else text,
+                parse_mode="HTML" if has_prof else None
+            )
+        elif message.animation:
+            return await bot_instance.send_animation(
+                config.takes_channel,
+                animation=message.animation.file_id,
+                caption=censored if has_prof else text,
+                parse_mode="HTML" if has_prof else None
+            )
+        elif message.document:
+            return await bot_instance.send_document(
+                config.takes_channel,
+                document=message.document.file_id,
+                caption=censored if has_prof else text,
+                parse_mode="HTML" if has_prof else None
+            )
+        elif message.voice:
+            return await bot_instance.send_voice(
+                config.takes_channel,
+                voice=message.voice.file_id,
+                caption=censored if has_prof else text,
+                parse_mode="HTML" if has_prof else None
+            )
+        elif message.audio:
+            return await bot_instance.send_audio(
+                config.takes_channel,
+                audio=message.audio.file_id,
+                caption=censored if has_prof else text,
+                parse_mode="HTML" if has_prof else None
+            )
+        elif message.sticker:
+            return await bot_instance.send_sticker(
+                config.takes_channel,
+                sticker=message.sticker.file_id
+            )
+        else:
+            return await bot_instance.send_message(
+                config.takes_channel,
+                censored if has_prof else text,
+                parse_mode="HTML" if has_prof else None
+            )
+    except Exception as e:
+        logger.error(f"Forward take error: {e}")
+        return None
+
+# ====================== CREATE BOT HANDLERS ======================
+def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
+    router = Router()
+    config = storage.bots.get(bot_id)
+
+    @router.message(Command("start"))
+    async def cmd_start(message: types.Message, state: FSMContext):
+        await state.clear()
+        get_or_create_user(message.from_user, bot_id)
+        cfg = storage.bots.get(bot_id)
+
+        if is_admin(message.from_user.id, bot_id):
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="👤 Пользователь", callback_data="user_mode"),
+                    InlineKeyboardButton(text="⚙️ Админ", callback_data="admin_mode")
+                ]
+            ])
+            await message.answer(f"👋 Привет, админ!\nВалюта: {cfg.currency_name} {cfg.currency_emoji}", reply_markup=kb)
+        else:
+            await message.answer(f"👋 Добро пожаловать!\nВалюта: {cfg.currency_name} {cfg.currency_emoji}", reply_markup=build_main_menu(bot_id))
+
+    @router.message(Command("cancel"))
+    async def cmd_cancel(message: types.Message, state: FSMContext):
+        await state.clear()
+        await message.answer("Отменено", reply_markup=build_main_menu(bot_id))
+
+    @router.message(Command("admin"))
+    async def cmd_admin(message: types.Message):
+        if is_admin(message.from_user.id, bot_id):
+            await message.answer("Админ-панель:", reply_markup=build_admin_menu(message.from_user.id, bot_id))
+        else:
+            await message.answer("Нет доступа")
+
+    @router.callback_query(F.data == "cancel")
+    async def cb_cancel(callback: types.CallbackQuery, state: FSMContext):
+        await state.clear()
+        await callback.message.edit_text("Отменено", reply_markup=build_main_menu(bot_id))
         await callback.answer()
 
-@dp.callback_query(F.data.startswith("quiz_a"))
-async def quiz_answers(callback: types.CallbackQuery) -> None:
-    uid = callback.from_user.id
-    data = callback.data
+    @router.callback_query(F.data == "user_mode")
+    async def cb_user_mode(callback: types.CallbackQuery):
+        await callback.message.edit_text("Меню:", reply_markup=build_main_menu(bot_id))
+        await callback.answer()
 
-    if data.endswith("correct"):
-        add_moons(uid, QUIZ_REWARD)
-        if data.startswith("quiz_a1"):
-            callback.data = "quiz_q2"
-            await quiz_questions(callback)
-        elif data.startswith("quiz_a2"):
-            callback.data = "quiz_q3"
-            await quiz_questions(callback)
-        elif data.startswith("quiz_a3"):
-            users[uid]["quiz_passed"] = True
-            save_data()
-            await callback.answer("Вы прошли викторину!")
-            await callback.message.edit_text("Вы прошли викторину! Выбор действия:", reply_markup=build_main_menu())
-    else:
-        await callback.answer("Неправильный ответ", show_alert=True)
-        await callback.message.edit_text("Неправильный ответ\n\nВыбор действия:", reply_markup=build_main_menu())
+    @router.callback_query(F.data == "admin_mode")
+    async def cb_admin_mode(callback: types.CallbackQuery):
+        if is_admin(callback.from_user.id, bot_id):
+            await callback.message.edit_text("Админ-панель:", reply_markup=build_admin_menu(callback.from_user.id, bot_id))
+        else:
+            await callback.answer("Нет доступа", show_alert=True)
+        await callback.answer()
 
-# ====================== Main ======================
+    @router.callback_query(F.data == "back_main")
+    async def cb_back_main(callback: types.CallbackQuery):
+        await callback.message.edit_text("Меню:", reply_markup=build_main_menu(bot_id))
+        await callback.answer()
 
-load_data()
+    @router.callback_query(F.data == "balance")
+    async def cb_balance(callback: types.CallbackQuery):
+        cfg = storage.bots.get(bot_id)
+        bal = get_balance(callback.from_user.id, bot_id)
+        bal_str = "∞" if bal == float('inf') else f"{bal:.0f}"
+        user = storage.users.get(callback.from_user.id)
 
-async def main() -> None:
-    try:
-        logger.info("Starting bot...")
-        await dp.start_polling(bot)
-    except Exception as e:
-        logger.error(f"Error: {e}")
-    finally:
-        logger.info("Bot stopped")
+        status = ""
+        if user:
+            if user.is_frozen.get(bot_id, False): status += "❄️ Заморожен\n"
+            if user.is_blocked.get(bot_id, False): status += "🚫 Заблокирован\n"
+
+        can_t, rem = can_send_take(callback.from_user.id, bot_id)
+        await callback.message.edit_text(
+            f"{status}Баланс: {bal_str} {cfg.currency_emoji}\n📝 Тейков: {rem}/{cfg.max_takes_per_day}",
+            reply_markup=build_main_menu(bot_id)
+        )
+        await callback.answer()
+
+    @router.callback_query(F.data == "top")
+    async def cb_top(callback: types.CallbackQuery):
+        cfg = storage.bots.get(bot_id)
+        users_list = []
+        for uid, u in storage.users.items():
+            if u.show_in_top.get(bot_id, True) and not u.is_owner.get(bot_id, False):
+                bal = u.balances.get(bot_id, 0)
+                if bal != float('inf') and bal != "inf":
+                    users_list.append((u.username, float(bal)))
+
+        users_list.sort(key=lambda x: x[1], reverse=True)
+        text = f"🏆 Топ {cfg.currency_name}:\n\n"
+        for i, (name, bal) in enumerate(users_list[:10], 1):
+            text += f"{i}. @{name} — {bal:.0f} {cfg.currency_emoji}\n"
+
+        if not users_list:
+            text += "Пусто"
+
+        await callback.message.edit_text(text, reply_markup=build_main_menu(bot_id))
+        await callback.answer()
+
+    @router.callback_query(F.data == "transfer")
+    async def cb_transfer(callback: types.CallbackQuery, state: FSMContext):
+        user = storage.users.get(callback.from_user.id)
+        if user and user.is_frozen.get(bot_id, False):
+            await callback.answer("❄️ Счёт заморожен", show_alert=True)
+            return
+        await callback.message.edit_text("Введите username или ID получателя:", reply_markup=build_cancel_kb())
+        await state.set_state(TransferStates.WaitingReceiver)
+        await callback.answer()
+
+    @router.message(TransferStates.WaitingReceiver)
+    async def transfer_receiver(message: types.Message, state: FSMContext):
+        receiver_id = find_user_by_input(message.text)
+        if not receiver_id:
+            await message.answer("Не найден. Попробуйте снова:", reply_markup=build_cancel_kb())
+            return
+        if receiver_id == message.from_user.id:
+            await message.answer("Нельзя себе", reply_markup=build_cancel_kb())
+            return
+        receiver = storage.users.get(receiver_id)
+        if receiver and receiver.is_frozen.get(bot_id, False):
+            await message.answer("❄️ Счёт получателя заморожен", reply_markup=build_cancel_kb())
+            return
+
+        await state.update_data(receiver_id=receiver_id)
+        await message.answer("Введите сумму (можно добавить сообщение на новой строке):", reply_markup=build_cancel_kb())
+        await state.set_state(TransferStates.WaitingAmountAndMessage)
+
+    @router.message(TransferStates.WaitingAmountAndMessage)
+    async def transfer_amount(message: types.Message, state: FSMContext):
+        lines = message.text.strip().split('\n', 1)
+        try:
+            amount = float(lines[0])
+            if amount <= 0: raise ValueError
+        except:
+            await message.answer("Неверная сумма", reply_markup=build_cancel_kb())
+            return
+
+        msg = lines[1].strip() if len(lines) > 1 else ""
+        data = await state.get_data()
+        receiver_id = data['receiver_id']
+        cfg = storage.bots.get(bot_id)
+
+        ok, err = transfer_balance(message.from_user.id, receiver_id, bot_id, amount)
+        if ok:
+            receiver = storage.users.get(receiver_id)
+            await message.answer(f"✅ Переведено {amount:.0f} {cfg.currency_emoji}", reply_markup=build_main_menu(bot_id))
+            notif = f"💰 Получено {amount:.0f} {cfg.currency_emoji} от @{storage.users[message.from_user.id].username}"
+            if msg: notif += f"\n💬 {msg}"
+            try:
+                await bot_instance.send_message(receiver_id, notif)
+            except: pass
+        else:
+            await message.answer(f"❌ {err}", reply_markup=build_main_menu(bot_id))
+        await state.clear()
+
+    @router.callback_query(F.data == "rates")
+    async def cb_rates(callback: types.CallbackQuery):
+        text = "📊 Курсы валют:\n\n"
+        for bid, cfg in storage.bots.items():
+            rate = get_exchange_rate(bid)
+            text += f"{cfg.currency_name} {cfg.currency_emoji}: {rate:.2f}\n"
+        if storage.exchange_rates.rates_locked:
+            text += "\n🔒 Зафиксированы"
+        await callback.message.edit_text(text, reply_markup=build_main_menu(bot_id))
+        await callback.answer()
+
+    @router.callback_query(F.data == "convert")
+    async def cb_convert(callback: types.CallbackQuery, state: FSMContext):
+        user = storage.users.get(callback.from_user.id)
+        bal = user.balances.get(bot_id, 0) if user else 0
+        if bal == float('inf') or bal == "inf":
+            await callback.answer("Владельцы не могут конвертировать", show_alert=True)
+            return
+        await callback.message.edit_text("Выберите валюту ИЗ которой:", reply_markup=build_currency_kb())
+        await state.set_state(ConvertStates.WaitingSourceCurrency)
+        await callback.answer()
+
+    @router.callback_query(ConvertStates.WaitingSourceCurrency, F.data.startswith("cur_"))
+    async def convert_source(callback: types.CallbackQuery, state: FSMContext):
+        source = callback.data[4:]
+        await state.update_data(source_bot=source)
+        await callback.message.edit_text("Выберите валюту В которую:", reply_markup=build_currency_kb(source))
+        await state.set_state(ConvertStates.WaitingTargetCurrency)
+        await callback.answer()
+
+    @router.callback_query(ConvertStates.WaitingTargetCurrency, F.data.startswith("cur_"))
+    async def convert_target(callback: types.CallbackQuery, state: FSMContext):
+        target = callback.data[4:]
+        await state.update_data(target_bot=target)
+        data = await state.get_data()
+        src_cfg = storage.bots.get(data['source_bot'])
+        tgt_cfg = storage.bots.get(target)
+        src_rate = get_exchange_rate(data['source_bot'])
+        tgt_rate = get_exchange_rate(target)
+        bal = get_balance(callback.from_user.id, data['source_bot'])
+
+        await callback.message.edit_text(
+            f"Курс: 1 {src_cfg.currency_emoji} = {src_rate/tgt_rate:.2f} {tgt_cfg.currency_emoji}\n"
+            f"Ваш баланс: {bal:.0f} {src_cfg.currency_emoji}\n\nВведите сумму:",
+            reply_markup=build_cancel_kb()
+        )
+        await state.set_state(ConvertStates.WaitingAmount)
+        await callback.answer()
+
+    @router.message(ConvertStates.WaitingAmount)
+    async def convert_amount(message: types.Message, state: FSMContext):
+        try:
+            amount = float(message.text.strip())
+            if amount <= 0: raise ValueError
+        except:
+            await message.answer("Неверная сумма", reply_markup=build_cancel_kb())
+            return
+
+        data = await state.get_data()
+        ok, converted, err = convert_currency(message.from_user.id, data['source_bot'], data['target_bot'], amount)
+        src_cfg = storage.bots.get(data['source_bot'])
+        tgt_cfg = storage.bots.get(data['target_bot'])
+
+        if ok:
+            await message.answer(f"✅ {amount:.0f} {src_cfg.currency_emoji} → {converted:.0f} {tgt_cfg.currency_emoji}", reply_markup=build_main_menu(bot_id))
+        else:
+            await message.answer(f"❌ {err}", reply_markup=build_main_menu(bot_id))
+        await state.clear()
+
+    @router.callback_query(F.data == "earn")
+    async def cb_earn(callback: types.CallbackQuery):
+        cfg = storage.bots.get(bot_id)
+        kb = InlineKeyboardBuilder()
+        if cfg.channel_url:
+            kb.row(InlineKeyboardButton(text="📢 Канал", url=cfg.channel_url))
+        kb.row(InlineKeyboardButton(text="❓ Викторина", callback_data="quiz_start"))
+        kb.row(InlineKeyboardButton(text="◀️ Назад", callback_data="back_main"))
+        await callback.message.edit_text("Как заработать:", reply_markup=kb.as_markup())
+        await callback.answer()
+
+    @router.callback_query(F.data == "quiz_start")
+    async def cb_quiz_start(callback: types.CallbackQuery, state: FSMContext):
+        user = storage.users.get(callback.from_user.id)
+        if user and user.quiz_passed.get(bot_id, False):
+            await callback.answer("Вы уже прошли викторину", show_alert=True)
+            return
+        await callback.message.edit_text(f"Вопрос 1:\n{QUIZ[1]['q']}", reply_markup=build_quiz_kb(1))
+        await state.set_state(QuizStates.Question1)
+        await callback.answer()
+
+    @router.callback_query(QuizStates.Question1, F.data.startswith("quiz_1_"))
+    async def quiz_q1(callback: types.CallbackQuery, state: FSMContext):
+        ans = int(callback.data.split("_")[2])
+        if ans == QUIZ[1]["correct"]:
+            cfg = storage.bots.get(bot_id)
+            add_balance(callback.from_user.id, bot_id, cfg.quiz_reward)
+            await callback.message.edit_text(f"✅ Верно!\n\nВопрос 2:\n{QUIZ[2]['q']}", reply_markup=build_quiz_kb(2))
+            await state.set_state(QuizStates.Question2)
+        else:
+            await callback.answer("❌ Неверно", show_alert=True)
+            await callback.message.edit_text("Неверный ответ", reply_markup=build_main_menu(bot_id))
+            await state.clear()
+        await callback.answer()
+
+    @router.callback_query(QuizStates.Question2, F.data.startswith("quiz_2_"))
+    async def quiz_q2(callback: types.CallbackQuery, state: FSMContext):
+        ans = int(callback.data.split("_")[2])
+        if ans == QUIZ[2]["correct"]:
+            cfg = storage.bots.get(bot_id)
+            add_balance(callback.from_user.id, bot_id, cfg.quiz_reward)
+            await callback.message.edit_text(f"✅ Верно!\n\nВопрос 3:\n{QUIZ[3]['q']}", reply_markup=build_quiz_kb(3))
+            await state.set_state(QuizStates.Question3)
+        else:
+            await callback.answer("❌ Неверно", show_alert=True)
+            await callback.message.edit_text("Неверный ответ", reply_markup=build_main_menu(bot_id))
+            await state.clear()
+        await callback.answer()
+
+    @router.callback_query(QuizStates.Question3, F.data.startswith("quiz_3_"))
+    async def quiz_q3(callback: types.CallbackQuery, state: FSMContext):
+        ans = int(callback.data.split("_")[2])
+        if ans == QUIZ[3]["correct"]:
+            cfg = storage.bots.get(bot_id)
+            add_balance(callback.from_user.id, bot_id, cfg.quiz_reward)
+            user = storage.users.get(callback.from_user.id)
+            if user:
+                user.quiz_passed[bot_id] = True
+                storage.save()
+            total = cfg.quiz_reward * 3
+            await callback.message.edit_text(f"🎉 Викторина пройдена!\n+{total} {cfg.currency_emoji}", reply_markup=build_main_menu(bot_id))
+        else:
+            await callback.answer("❌ Неверно", show_alert=True)
+            await callback.message.edit_text("Неверный ответ", reply_markup=build_main_menu(bot_id))
+        await state.clear()
+        await callback.answer()
+
+    # ===== TAKES =====
+    if config and "takes" in config.modules:
+        
+        async def process_take_message(message: types.Message, bot_id: str, bot_inst: Bot):
+            uid = message.from_user.id
+            
+            if uid not in storage.users:
+                get_or_create_user(message.from_user, bot_id)
+            
+            user = storage.users.get(uid)
+            cfg = storage.bots.get(bot_id)
+            
+            if user and user.is_blocked.get(bot_id, False):
+                await message.answer("🚫 Вы заблокированы для отправки тейков")
+                return False
+            
+            can_t, rem = can_send_take(uid, bot_id)
+            if not can_t:
+                await message.answer(f"❌ Лимит тейков исчерпан ({cfg.max_takes_per_day} в 24ч)")
+                return False
+            
+            text = message.text or message.caption or ""
+            
+            if contains_marker_words(text, bot_id):
+                take_id = str(uuid.uuid4())[:8]
+                storage.pending_takes[take_id] = {
+                    'user_id': uid,
+                    'bot_id': bot_id,
+                    'text': text,
+                    'photo': message.photo[-1].file_id if message.photo else None,
+                    'video': message.video.file_id if message.video else None,
+                    'animation': message.animation.file_id if message.animation else None,
+                    'document': message.document.file_id if message.document else None,
+                    'voice': message.voice.file_id if message.voice else None,
+                    'audio': message.audio.file_id if message.audio else None,
+                    'sticker': message.sticker.file_id if message.sticker else None,
+                    'caption': message.caption
+                }
+                storage.save()
+
+                for mod_uid, u in storage.users.items():
+                    if is_moderator(mod_uid, bot_id):
+                        try:
+                            blocked = storage.users[uid].is_blocked.get(bot_id, False)
+                            await bot_inst.send_message(
+                                mod_uid,
+                                f"⚠️ Тейк на модерации\nОт: @{user.username}\n\n{text}",
+                                reply_markup=build_take_mod_kb(take_id, uid, blocked)
+                            )
+                            await message.forward(mod_uid)
+                        except Exception as e:
+                            logger.error(f"Error sending to moderator {mod_uid}: {e}")
+
+                await message.answer("📝 Тейк отправлен на модерацию", reply_markup=build_main_menu(bot_id))
+                return True
+            else:
+                sent = await forward_take(message, bot_id, bot_inst)
+                if sent:
+                    add_take_timestamp(uid, bot_id)
+                    _, rem = can_send_take(uid, bot_id)
+                    await message.answer(
+                        f"✅ Тейк отправлен в канал!\n📊 Осталось: {rem}/{cfg.max_takes_per_day}",
+                        reply_markup=build_main_menu(bot_id)
+                    )
+                    return True
+                else:
+                    await message.answer("❌ Ошибка отправки", reply_markup=build_main_menu(bot_id))
+                    return False
+
+        @router.callback_query(F.data == "send_take")
+        async def cb_send_take(callback: types.CallbackQuery, state: FSMContext):
+            user = storage.users.get(callback.from_user.id)
+            if user and user.is_blocked.get(bot_id, False):
+                await callback.answer("🚫 Заблокированы", show_alert=True)
+                return
+            can_t, rem = can_send_take(callback.from_user.id, bot_id)
+            if not can_t:
+                await callback.answer("Лимит исчерпан", show_alert=True)
+                return
+            cfg = storage.bots.get(bot_id)
+            await callback.message.edit_text(
+                f"📝 Отправьте тейк с #тейк\nОсталось: {rem}/{cfg.max_takes_per_day}",
+                reply_markup=build_cancel_kb()
+            )
+            await state.set_state(TakeStates.WaitingTake)
+            await callback.answer()
+
+        @router.message(TakeStates.WaitingTake)
+        async def process_take_state(message: types.Message, state: FSMContext):
+            text = message.text or message.caption or ""
+            if "#тейк" not in text.lower():
+                await message.answer("⚠️ Добавьте #тейк", reply_markup=build_cancel_kb())
+                return
+            await process_take_message(message, bot_id, bot_instance)
+            await state.clear()
+
+        @router.message(F.text.contains("#тейк") | F.caption.contains("#тейк"))
+        async def auto_forward_take(message: types.Message, state: FSMContext):
+            current_state = await state.get_state()
+            if current_state == TakeStates.WaitingTake:
+                return
+            await process_take_message(message, bot_id, bot_instance)
+
+        @router.callback_query(F.data.startswith("take_ok_"))
+        async def take_approve(callback: types.CallbackQuery):
+            take_id = callback.data[8:]
+            take = storage.pending_takes.get(take_id)
+            if not take:
+                await callback.answer("Не найдено", show_alert=True)
+                return
+            
+            cfg = storage.bots.get(take['bot_id'])
+            try:
+                text = take.get('caption') or take.get('text', '')
+                censored, has_prof = censor_profanity(text, bot_id)
+                
+                if take.get('photo'):
+                    await bot_instance.send_photo(
+                        cfg.takes_channel, photo=take['photo'],
+                        caption=censored if has_prof else text,
+                        parse_mode="HTML" if has_prof else None
+                    )
+                elif take.get('video'):
+                    await bot_instance.send_video(
+                        cfg.takes_channel, video=take['video'],
+                        caption=censored if has_prof else text,
+                        parse_mode="HTML" if has_prof else None
+                    )
+                elif take.get('animation'):
+                    await bot_instance.send_animation(
+                        cfg.takes_channel, animation=take['animation'],
+                        caption=censored if has_prof else text,
+                        parse_mode="HTML" if has_prof else None
+                    )
+                elif take.get('document'):
+                    await bot_instance.send_document(
+                        cfg.takes_channel, document=take['document'],
+                        caption=censored if has_prof else text,
+                        parse_mode="HTML" if has_prof else None
+                    )
+                elif take.get('voice'):
+                    await bot_instance.send_voice(
+                        cfg.takes_channel, voice=take['voice'],
+                        caption=censored if has_prof else text,
+                        parse_mode="HTML" if has_prof else None
+                    )
+                elif take.get('audio'):
+                    await bot_instance.send_audio(
+                        cfg.takes_channel, audio=take['audio'],
+                        caption=censored if has_prof else text,
+                        parse_mode="HTML" if has_prof else None
+                    )
+                elif take.get('sticker'):
+                    await bot_instance.send_sticker(cfg.takes_channel, sticker=take['sticker'])
+                else:
+                    await bot_instance.send_message(
+                        cfg.takes_channel,
+                        censored if has_prof else take['text'],
+                        parse_mode="HTML" if has_prof else None
+                    )
+                
+                add_take_timestamp(take['user_id'], bot_id)
+                del storage.pending_takes[take_id]
+                storage.save()
+                
+                await callback.message.edit_text("✅ Тейк одобрен")
+                
+                try:
+                    _, rem = can_send_take(take['user_id'], bot_id)
+                    await bot_instance.send_message(
+                        take['user_id'],
+                        f"✅ Ваш тейк одобрен!\n📊 Осталось: {rem}/{cfg.max_takes_per_day}"
+                    )
+                except: pass
+                
+            except Exception as e:
+                logger.error(f"Error approving take: {e}")
+                await callback.answer(f"Ошибка: {e}", show_alert=True)
+            await callback.answer()
+
+        @router.callback_query(F.data.startswith("take_no_"))
+        async def take_reject(callback: types.CallbackQuery):
+            take_id = callback.data[8:]
+            take = storage.pending_takes.get(take_id)
+            
+            if take:
+                try:
+                    await bot_instance.send_message(take['user_id'], "❌ Ваш тейк отклонён")
+                except: pass
+                del storage.pending_takes[take_id]
+                storage.save()
+            
+            await callback.message.edit_text("❌ Тейк отклонён")
+            await callback.answer()
+
+        @router.callback_query(F.data.startswith("block_"))
+        async def block_user_cb(callback: types.CallbackQuery):
+            if not is_moderator(callback.from_user.id, bot_id):
+                await callback.answer("Нет доступа", show_alert=True)
+                return
+            uid = int(callback.data[6:])
+            if uid in storage.users:
+                storage.users[uid].is_blocked[bot_id] = True
+                storage.save()
+                try:
+                    await bot_instance.send_message(uid, "🚫 Вы заблокированы")
+                except: pass
+            await callback.answer("🚫 Заблокирован", show_alert=True)
+
+        @router.callback_query(F.data.startswith("unblock_"))
+        async def unblock_user_cb(callback: types.CallbackQuery):
+            if not is_moderator(callback.from_user.id, bot_id):
+                await callback.answer("Нет доступа", show_alert=True)
+                return
+            uid = int(callback.data[8:])
+            if uid in storage.users:
+                storage.users[uid].is_blocked[bot_id] = False
+                storage.save()
+                try:
+                    await bot_instance.send_message(uid, "✅ Вы разблокированы")
+                except: pass
+            await callback.answer("✅ Разблокирован", show_alert=True)
+
+    # ===== SHOP =====
+    if config and "shop" in config.modules:
+        @router.callback_query(F.data == "shop")
+        async def cb_shop(callback: types.CallbackQuery):
+            await callback.message.edit_text("🛒 Магазин:", reply_markup=build_shop_menu(bot_id))
+            await callback.answer()
+
+        @router.callback_query(F.data == "add_product")
+        async def cb_add_product(callback: types.CallbackQuery, state: FSMContext):
+            await callback.message.edit_text(
+                "📦 Отправьте фото товара с #продажа или #обмен:",
+                reply_markup=build_cancel_kb()
+            )
+            await state.set_state(ProductStates.WaitingProductImage)
+            await callback.answer()
+
+        @router.message(ProductStates.WaitingProductImage)
+        async def product_image(message: types.Message, state: FSMContext):
+            if not message.photo:
+                await message.answer("Нужно фото", reply_markup=build_cancel_kb())
+                return
+            text = message.caption or ""
+            if "#продажа" not in text.lower() and "#обмен" not in text.lower():
+                await message.answer("Добавьте #продажа или #обмен", reply_markup=build_cancel_kb())
+                return
+            await state.update_data(photo=message.photo[-1].file_id, caption=text)
+            await message.answer("Укажите цену:", reply_markup=build_cancel_kb())
+            await state.set_state(ProductStates.WaitingProductPrice)
+
+        @router.message(ProductStates.WaitingProductPrice)
+        async def product_price(message: types.Message, state: FSMContext):
+            await state.update_data(price=message.text.strip())
+            await message.answer("Контакт для связи:", reply_markup=build_cancel_kb())
+            await state.set_state(ProductStates.WaitingProductContact)
+
+        @router.message(ProductStates.WaitingProductContact)
+        async def product_contact(message: types.Message, state: FSMContext):
+            await state.update_data(contact=message.text.strip())
+            cfg = storage.bots.get(bot_id)
+            if cfg.shop_topics:
+                await message.answer("Выберите тему:", reply_markup=build_topic_select_kb(bot_id))
+                await state.set_state(ProductStates.WaitingProductTopic)
+            else:
+                data = await state.get_data()
+                caption = f"{data['caption']}\n\n💰 {data['price']}\n📞 {data['contact']}"
+                try:
+                    await bot_instance.send_photo(cfg.shop_channel, photo=data['photo'], caption=caption)
+                    await message.answer("✅ Товар добавлен!", reply_markup=build_main_menu(bot_id))
+                except Exception as e:
+                    await message.answer(f"❌ Ошибка: {e}", reply_markup=build_main_menu(bot_id))
+                await state.clear()
+
+        @router.callback_query(ProductStates.WaitingProductTopic, F.data.startswith("topic_sel_"))
+        async def product_topic(callback: types.CallbackQuery, state: FSMContext):
+            thread_id = callback.data[10:]
+            data = await state.get_data()
+            cfg = storage.bots.get(bot_id)
+            caption = f"{data['caption']}\n\n💰 {data['price']}\n📞 {data['contact']}"
+            try:
+                await bot_instance.send_photo(
+                    cfg.shop_channel, photo=data['photo'],
+                    caption=caption, message_thread_id=int(thread_id)
+                )
+                await callback.message.edit_text("✅ Товар добавлен!", reply_markup=build_main_menu(bot_id))
+            except Exception as e:
+                await callback.message.edit_text(f"❌ Ошибка: {e}", reply_markup=build_main_menu(bot_id))
+            await state.clear()
+            await callback.answer()
+
+        @router.message(F.text.contains("#продажа") | F.caption.contains("#продажа") | 
+                       F.text.contains("#обмен") | F.caption.contains("#обмен"))
+        async def auto_forward_shop(message: types.Message, state: FSMContext):
+            current_state = await state.get_state()
+            if current_state:
+                return
+            cfg = storage.bots.get(bot_id)
+            try:
+                if message.photo:
+                    await bot_instance.send_photo(
+                        cfg.shop_channel, photo=message.photo[-1].file_id,
+                        caption=message.caption
+                    )
+                else:
+                    await bot_instance.send_message(cfg.shop_channel, message.text)
+                await message.answer("✅ Объявление отправлено!")
+            except Exception as e:
+                logger.error(f"Auto forward shop error: {e}")
+
+        @router.callback_query(F.data.startswith("promo_"))
+        async def cb_promo(callback: types.CallbackQuery, state: FSMContext):
+            if callback.data == "promo_pay":
+                data = await state.get_data()
+                total = data.get('total', 0)
+                cfg = storage.bots.get(bot_id)
+
+                if not deduct_balance(callback.from_user.id, bot_id, total):
+                    await callback.answer("Недостаточно средств", show_alert=True)
+                    return
+
+                post = data.get('post', {})
+                try:
+                    if post.get('photo'):
+                        sent = await bot_instance.send_photo(
+                            cfg.takes_channel, photo=post['photo'],
+                            caption=post.get('caption')
+                        )
+                    elif post.get('video'):
+                        sent = await bot_instance.send_video(
+                            cfg.takes_channel, video=post['video'],
+                            caption=post.get('caption')
+                        )
+                    else:
+                        sent = await bot_instance.send_message(cfg.takes_channel, post.get('text', ''))
+
+                    if data.get('pinned'):
+                        try:
+                            await bot_instance.pin_chat_message(cfg.takes_channel, sent.message_id)
+                        except: pass
+
+                    hours = data.get('hours', 1)
+                    
+                    async def delete_later():
+                        await asyncio.sleep(hours * 3600)
+                        try:
+                            if data.get('pinned'):
+                                await bot_instance.unpin_chat_message(cfg.takes_channel, sent.message_id)
+                            await bot_instance.delete_message(cfg.takes_channel, sent.message_id)
+                        except: pass
+
+                    asyncio.create_task(delete_later())
+                    await callback.message.edit_text(
+                        f"✅ Пиар размещён на {hours}ч",
+                        reply_markup=build_main_menu(bot_id)
+                    )
+                except Exception as e:
+                    add_balance(callback.from_user.id, bot_id, total)
+                    await callback.message.edit_text(f"❌ Ошибка: {e}", reply_markup=build_main_menu(bot_id))
+                await state.clear()
+                await callback.answer()
+                return
+                
+            pinned = callback.data == "promo_pinned"
+            cfg = storage.bots.get(bot_id)
+            price = cfg.promo_pin_price_per_hour if pinned else cfg.promo_price_per_hour
+            await state.update_data(pinned=pinned, price_per_hour=price)
+            await callback.message.edit_text(
+                f"{'📌' if pinned else '📢'} Пиар\n{price} {cfg.currency_emoji}/час\n\nСколько часов?",
+                reply_markup=build_cancel_kb()
+            )
+            await state.set_state(PromoStates.WaitingHours)
+            await callback.answer()
+
+        @router.message(PromoStates.WaitingHours)
+        async def promo_hours(message: types.Message, state: FSMContext):
+            try:
+                hours = int(message.text)
+                if hours <= 0: raise ValueError
+            except:
+                await message.answer("Введите число", reply_markup=build_cancel_kb())
+                return
+            await state.update_data(hours=hours)
+            await message.answer("Отправьте пост:", reply_markup=build_cancel_kb())
+            await state.set_state(PromoStates.WaitingPromoPost)
+
+        @router.message(PromoStates.WaitingPromoPost)
+        async def promo_post(message: types.Message, state: FSMContext):
+            post = {
+                'text': message.text,
+                'caption': message.caption,
+                'photo': message.photo[-1].file_id if message.photo else None,
+                'video': message.video.file_id if message.video else None
+            }
+            data = await state.get_data()
+            total = data['hours'] * data['price_per_hour']
+            await state.update_data(post=post, total=total)
+            cfg = storage.bots.get(bot_id)
+            bal = get_balance(message.from_user.id, bot_id)
+            bal_str = "∞" if bal == float('inf') else f"{bal:.0f}"
+            await message.answer(
+                f"{'📌' if data['pinned'] else '📢'} Пиар {data['hours']}ч\n"
+                f"💰 К оплате: {total} {cfg.currency_emoji}\n"
+                f"💳 Баланс: {bal_str} {cfg.currency_emoji}",
+                reply_markup=build_promo_confirm_kb()
+            )
+            await state.set_state(PromoStates.WaitingConfirmation)
+
+        @router.callback_query(F.data == "buy_product")
+        async def cb_buy(callback: types.CallbackQuery, state: FSMContext):
+            await callback.message.edit_text("Отправьте фото товара:", reply_markup=build_cancel_kb())
+            await state.set_state(PurchaseStates.WaitingProductImage)
+            await callback.answer()
+
+        @router.message(PurchaseStates.WaitingProductImage)
+        async def buy_image(message: types.Message, state: FSMContext):
+            if not message.photo:
+                await message.answer("Нужно фото", reply_markup=build_cancel_kb())
+                return
+            await state.update_data(photo=message.photo[-1].file_id)
+            await message.answer("Username или ID продавца:", reply_markup=build_cancel_kb())
+            await state.set_state(PurchaseStates.WaitingSellerInfo)
+
+        @router.message(PurchaseStates.WaitingSellerInfo)
+        async def buy_seller(message: types.Message, state: FSMContext):
+            seller_id = find_user_by_input(message.text)
+            if not seller_id:
+                await message.answer("Не найден", reply_markup=build_cancel_kb())
+                return
+            if seller_id == message.from_user.id:
+                await message.answer("Нельзя у себя", reply_markup=build_cancel_kb())
+                return
+            await state.update_data(seller_id=seller_id)
+            await message.answer("Сумма:", reply_markup=build_cancel_kb())
+            await state.set_state(PurchaseStates.WaitingAmount)
+
+        @router.message(PurchaseStates.WaitingAmount)
+        async def buy_amount(message: types.Message, state: FSMContext):
+            try:
+                amount = float(message.text)
+                if amount <= 0: raise ValueError
+            except:
+                await message.answer("Неверная сумма", reply_markup=build_cancel_kb())
+                return
+
+            data = await state.get_data()
+            purchase_id = str(uuid.uuid4())[:8]
+            buyer = storage.users.get(message.from_user.id)
+
+            storage.pending_purchases[purchase_id] = {
+                'buyer_id': message.from_user.id,
+                'seller_id': data['seller_id'],
+                'amount': amount,
+                'photo': data['photo'],
+                'bot_id': bot_id
+            }
+            storage.save()
+
+            cfg = storage.bots.get(bot_id)
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"pur_ok_{purchase_id}"),
+                    InlineKeyboardButton(text="❌ Отклонить", callback_data=f"pur_no_{purchase_id}")
+                ]
+            ])
+            try:
+                await bot_instance.send_photo(
+                    data['seller_id'], photo=data['photo'],
+                    caption=f"🛒 Запрос покупки\nОт: @{buyer.username}\nСумма: {amount} {cfg.currency_emoji}",
+                    reply_markup=kb
+                )
+                await message.answer("✅ Запрос отправлен", reply_markup=build_main_menu(bot_id))
+            except:
+                del storage.pending_purchases[purchase_id]
+                await message.answer("❌ Не удалось связаться", reply_markup=build_main_menu(bot_id))
+            await state.clear()
+
+        @router.callback_query(F.data.startswith("pur_ok_"))
+        async def purchase_ok(callback: types.CallbackQuery):
+            pid = callback.data[7:]
+            pur = storage.pending_purchases.get(pid)
+            if not pur:
+                await callback.answer("Не найдено", show_alert=True)
+                return
+            if callback.from_user.id != pur['seller_id']:
+                await callback.answer("Не ваше", show_alert=True)
+                return
+
+            cfg = storage.bots.get(pur['bot_id'])
+            ok, err = transfer_balance(pur['buyer_id'], pur['seller_id'], pur['bot_id'], pur['amount'])
+            if ok:
+                await callback.message.edit_caption(caption=f"✅ Продано! +{pur['amount']} {cfg.currency_emoji}")
+                try:
+                    await bot_instance.send_message(
+                        pur['buyer_id'],
+                        f"✅ Покупка подтверждена! -{pur['amount']} {cfg.currency_emoji}"
+                    )
+                except: pass
+            else:
+                await callback.answer(err, show_alert=True)
+            del storage.pending_purchases[pid]
+            storage.save()
+            await callback.answer()
+
+        @router.callback_query(F.data.startswith("pur_no_"))
+        async def purchase_no(callback: types.CallbackQuery):
+            pid = callback.data[7:]
+            pur = storage.pending_purchases.get(pid)
+            if pur:
+                try:
+                    await bot_instance.send_message(pur['buyer_id'], "❌ Покупка отклонена")
+                except: pass
+                del storage.pending_purchases[pid]
+                storage.save()
+            await callback.message.edit_caption(caption="❌ Отклонено")
+            await callback.answer()
+
+    # ===== ADMIN =====
+    @router.callback_query(F.data == "adm_users")
+    async def adm_users(callback: types.CallbackQuery):
+        if not is_admin(callback.from_user.id, bot_id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        cfg = storage.bots.get(bot_id)
+        text = "👥 Пользователи:\n\n"
+        for uid, u in list(storage.users.items())[:20]:
+            bal = u.balances.get(bot_id, 0)
+            bal_str = "∞" if bal == float('inf') or bal == "inf" else f"{float(bal):.0f}"
+            flags = ""
+            if u.is_frozen.get(bot_id, False): flags += "❄️"
+            if u.is_blocked.get(bot_id, False): flags += "🚫"
+            if u.is_moderator.get(bot_id, False): flags += "👮"
+            text += f"@{u.username}: {bal_str} {cfg.currency_emoji} {flags}\n"
+        await callback.message.edit_text(text, reply_markup=build_admin_menu(callback.from_user.id, bot_id))
+        await callback.answer()
+
+    @router.callback_query(F.data == "adm_deduct")
+    async def adm_deduct(callback: types.CallbackQuery, state: FSMContext):
+        if not is_owner(callback.from_user.id, bot_id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        await callback.message.edit_text("Username для списания:", reply_markup=build_cancel_kb())
+        await state.set_state(AdminStates.WaitingUsernameForDeduct)
+        await callback.answer()
+
+    @router.message(AdminStates.WaitingUsernameForDeduct)
+    async def deduct_user(message: types.Message, state: FSMContext):
+        uid = find_user_by_input(message.text)
+        if not uid:
+            await message.answer("Не найден", reply_markup=build_cancel_kb())
+            return
+        await state.update_data(target_uid=uid)
+        cfg = storage.bots.get(bot_id)
+        bal = get_balance(uid, bot_id)
+        await message.answer(f"Баланс: {bal:.0f} {cfg.currency_emoji}\nСколько списать?", reply_markup=build_cancel_kb())
+        await state.set_state(AdminStates.WaitingAmountForDeduct)
+
+    @router.message(AdminStates.WaitingAmountForDeduct)
+    async def deduct_amount(message: types.Message, state: FSMContext):
+        try:
+            amount = float(message.text)
+        except:
+            await message.answer("Неверное число", reply_markup=build_cancel_kb())
+            return
+        data = await state.get_data()
+        uid = data['target_uid']
+        if deduct_balance(uid, bot_id, amount):
+            cfg = storage.bots.get(bot_id)
+            await message.answer(f"✅ Списано {amount} {cfg.currency_emoji}", reply_markup=build_admin_menu(message.from_user.id, bot_id))
+        else:
+            await message.answer("❌ Ошибка", reply_markup=build_admin_menu(message.from_user.id, bot_id))
+        await state.clear()
+
+    @router.callback_query(F.data == "adm_freeze")
+    async def adm_freeze(callback: types.CallbackQuery, state: FSMContext):
+        if not is_owner(callback.from_user.id, bot_id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        await callback.message.edit_text("Username для заморозки:", reply_markup=build_cancel_kb())
+        await state.set_state(AdminStates.WaitingUsernameForFreeze)
+        await callback.answer()
+
+    @router.message(AdminStates.WaitingUsernameForFreeze)
+    async def freeze_user(message: types.Message, state: FSMContext):
+        uid = find_user_by_input(message.text)
+        if uid and uid in storage.users:
+            storage.users[uid].is_frozen[bot_id] = True
+            storage.save()
+            await message.answer("❄️ Заморожен", reply_markup=build_admin_menu(message.from_user.id, bot_id))
+        else:
+            await message.answer("Не найден", reply_markup=build_cancel_kb())
+        await state.clear()
+
+    @router.callback_query(F.data == "adm_unfreeze")
+    async def adm_unfreeze(callback: types.CallbackQuery, state: FSMContext):
+        if not is_owner(callback.from_user.id, bot_id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        await callback.message.edit_text("Username для разморозки:", reply_markup=build_cancel_kb())
+        await state.set_state(AdminStates.WaitingUsernameForUnfreeze)
+        await callback.answer()
+
+    @router.message(AdminStates.WaitingUsernameForUnfreeze)
+    async def unfreeze_user(message: types.Message, state: FSMContext):
+        uid = find_user_by_input(message.text)
+        if uid and uid in storage.users:
+            storage.users[uid].is_frozen[bot_id] = False
+            storage.save()
+            await message.answer("🔥 Разморожен", reply_markup=build_admin_menu(message.from_user.id, bot_id))
+        else:
+            await message.answer("Не найден", reply_markup=build_cancel_kb())
+        await state.clear()
+
+    @router.callback_query(F.data == "adm_censor")
+    async def adm_censor(callback: types.CallbackQuery):
+        if not is_admin(callback.from_user.id, bot_id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        await callback.message.edit_text("🔧 Цензура:\n\n⚠️ Базовые слова работают всегда.\nЗдесь можно добавить дополнительные.", reply_markup=build_censor_menu())
+        await callback.answer()
+
+    @router.callback_query(F.data == "censor_add")
+    async def censor_add(callback: types.CallbackQuery, state: FSMContext):
+        await callback.message.edit_text("Введите слово/корень для добавления:", reply_markup=build_cancel_kb())
+        await state.set_state(AdminStates.WaitingCensorWord)
+        await callback.answer()
+
+    @router.message(AdminStates.WaitingCensorWord)
+    async def censor_word(message: types.Message, state: FSMContext):
+        word = message.text.strip().lower()
+        cfg = storage.bots.get(bot_id)
+        if word not in cfg.censored_words:
+            cfg.censored_words.append(word)
+            storage.save()
+            await message.answer(f"✅ '{word}' добавлено в цензуру", reply_markup=build_censor_menu())
+        else:
+            await message.answer("Уже есть в списке", reply_markup=build_censor_menu())
+        await state.clear()
+
+    @router.callback_query(F.data == "censor_del")
+    async def censor_del(callback: types.CallbackQuery, state: FSMContext):
+        cfg = storage.bots.get(bot_id)
+        if not cfg.censored_words:
+            await callback.answer("Дополнительный список пуст", show_alert=True)
+            return
+        await callback.message.edit_text(
+            f"Дополнительные слова: {', '.join(cfg.censored_words)}\n\nВведите слово для удаления:",
+            reply_markup=build_cancel_kb()
+        )
+        await state.set_state(AdminStates.WaitingRemoveCensorWord)
+        await callback.answer()
+
+    @router.message(AdminStates.WaitingRemoveCensorWord)
+    async def censor_del_word(message: types.Message, state: FSMContext):
+        word = message.text.strip().lower()
+        cfg = storage.bots.get(bot_id)
+        if word in cfg.censored_words:
+            cfg.censored_words.remove(word)
+            storage.save()
+            await message.answer(f"✅ '{word}' удалено", reply_markup=build_censor_menu())
+        else:
+            await message.answer("Не найдено в списке", reply_markup=build_censor_menu())
+        await state.clear()
+
+    @router.callback_query(F.data == "marker_add")
+    async def marker_add(callback: types.CallbackQuery, state: FSMContext):
+        await callback.message.edit_text("Введите слово-маркер (тейки с ним пойдут на модерацию):", reply_markup=build_cancel_kb())
+        await state.set_state(AdminStates.WaitingMarkerWord)
+        await callback.answer()
+
+    @router.message(AdminStates.WaitingMarkerWord)
+    async def marker_word(message: types.Message, state: FSMContext):
+        word = message.text.strip().lower()
+        cfg = storage.bots.get(bot_id)
+        if word not in cfg.marker_words:
+            cfg.marker_words.append(word)
+            storage.save()
+            await message.answer(f"✅ Маркер '{word}' добавлен", reply_markup=build_censor_menu())
+        else:
+            await message.answer("Уже есть", reply_markup=build_censor_menu())
+        await state.clear()
+
+    @router.callback_query(F.data == "marker_del")
+    async def marker_del(callback: types.CallbackQuery, state: FSMContext):
+        cfg = storage.bots.get(bot_id)
+        if not cfg.marker_words:
+            await callback.answer("Список маркеров пуст", show_alert=True)
+            return
+        await callback.message.edit_text(
+            f"Маркеры: {', '.join(cfg.marker_words)}\n\nВведите для удаления:",
+            reply_markup=build_cancel_kb()
+        )
+        await state.set_state(AdminStates.WaitingRemoveMarkerWord)
+        await callback.answer()
+
+    @router.message(AdminStates.WaitingRemoveMarkerWord)
+    async def marker_del_word(message: types.Message, state: FSMContext):
+        word = message.text.strip().lower()
+        cfg = storage.bots.get(bot_id)
+        if word in cfg.marker_words:
+            cfg.marker_words.remove(word)
+            storage.save()
+            await message.answer(f"✅ Маркер '{word}' удалён", reply_markup=build_censor_menu())
+        else:
+            await message.answer("Не найдено", reply_markup=build_censor_menu())
+        await state.clear()
+
+    @router.callback_query(F.data == "censor_list")
+    async def censor_list(callback: types.CallbackQuery):
+        cfg = storage.bots.get(bot_id)
+        custom = cfg.censored_words if cfg.censored_words else ["(нет)"]
+        markers = cfg.marker_words if cfg.marker_words else ["(нет)"]
+        await callback.message.edit_text(
+            f"🔧 Цензура\n\n"
+            f"📋 Базовые корни: работают всегда (мат, оскорбления)\n\n"
+            f"📋 Дополнительные слова:\n{', '.join(custom)}\n\n"
+            f"🏷 Маркеры (модерация):\n{', '.join(markers)}",
+            reply_markup=build_censor_menu()
+        )
+        await callback.answer()
+
+    @router.callback_query(F.data == "adm_mods")
+    async def adm_mods(callback: types.CallbackQuery):
+        if not is_admin(callback.from_user.id, bot_id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        await callback.message.edit_text("👮 Модераторы:", reply_markup=build_mods_menu())
+        await callback.answer()
+
+    @router.callback_query(F.data == "mod_add")
+    async def mod_add(callback: types.CallbackQuery, state: FSMContext):
+        await callback.message.edit_text("Username модератора:", reply_markup=build_cancel_kb())
+        await state.set_state(AdminStates.WaitingModeratorUsername)
+        await callback.answer()
+
+    @router.message(AdminStates.WaitingModeratorUsername)
+    async def mod_add_user(message: types.Message, state: FSMContext):
+        uid = find_user_by_input(message.text)
+        if uid and uid in storage.users:
+            storage.users[uid].is_moderator[bot_id] = True
+            storage.save()
+            await message.answer("✅ Назначен модератором", reply_markup=build_mods_menu())
+        else:
+            await message.answer("Не найден", reply_markup=build_cancel_kb())
+        await state.clear()
+
+    @router.callback_query(F.data == "mod_del")
+    async def mod_del(callback: types.CallbackQuery, state: FSMContext):
+        await callback.message.edit_text("Username для снятия:", reply_markup=build_cancel_kb())
+        await state.set_state(AdminStates.WaitingRemoveModeratorUsername)
+        await callback.answer()
+
+    @router.message(AdminStates.WaitingRemoveModeratorUsername)
+    async def mod_del_user(message: types.Message, state: FSMContext):
+        uid = find_user_by_input(message.text)
+        if uid and uid in storage.users:
+            storage.users[uid].is_moderator[bot_id] = False
+            storage.save()
+            await message.answer("✅ Снят с модераторов", reply_markup=build_mods_menu())
+        else:
+            await message.answer("Не найден", reply_markup=build_cancel_kb())
+        await state.clear()
+
+    @router.callback_query(F.data == "mod_list")
+    async def mod_list(callback: types.CallbackQuery):
+        mods = [u.username for u in storage.users.values() if u.is_moderator.get(bot_id, False)]
+        text = ", ".join(f"@{m}" for m in mods) if mods else "(нет)"
+        await callback.message.edit_text(f"👮 Модераторы: {text}", reply_markup=build_mods_menu())
+        await callback.answer()
+
+    if config and "shop" in config.modules:
+        @router.callback_query(F.data == "adm_topics")
+        async def adm_topics(callback: types.CallbackQuery):
+            if not is_admin(callback.from_user.id, bot_id):
+                await callback.answer("Нет доступа", show_alert=True)
+                return
+            await callback.message.edit_text("📁 Темы:", reply_markup=build_topics_menu())
+            await callback.answer()
+
+        @router.callback_query(F.data == "topic_add")
+        async def topic_add(callback: types.CallbackQuery, state: FSMContext):
+            await callback.message.edit_text("Название темы:", reply_markup=build_cancel_kb())
+            await state.set_state(AdminStates.WaitingTopicName)
+            await callback.answer()
+
+        @router.message(AdminStates.WaitingTopicName)
+        async def topic_name(message: types.Message, state: FSMContext):
+            await state.update_data(topic_name=message.text.strip())
+            await message.answer("Thread ID:", reply_markup=build_cancel_kb())
+            await state.set_state(AdminStates.WaitingTopicThreadId)
+
+        @router.message(AdminStates.WaitingTopicThreadId)
+        async def topic_thread(message: types.Message, state: FSMContext):
+            data = await state.get_data()
+            cfg = storage.bots.get(bot_id)
+            cfg.shop_topics.append({'name': data['topic_name'], 'thread_id': message.text.strip()})
+            storage.save()
+            await message.answer(f"✅ Тема '{data['topic_name']}' добавлена", reply_markup=build_topics_menu())
+            await state.clear()
+
+        @router.callback_query(F.data == "topic_del")
+        async def topic_del(callback: types.CallbackQuery, state: FSMContext):
+            cfg = storage.bots.get(bot_id)
+            if not cfg.shop_topics:
+                await callback.answer("Нет тем", show_alert=True)
+                return
+            text = "\n".join([f"{t['name']} ({t['thread_id']})" for t in cfg.shop_topics])
+            await callback.message.edit_text(f"Темы:\n{text}\n\nВведите название:", reply_markup=build_cancel_kb())
+            await state.set_state(AdminStates.WaitingRemoveTopic)
+            await callback.answer()
+
+        @router.message(AdminStates.WaitingRemoveTopic)
+        async def topic_del_name(message: types.Message, state: FSMContext):
+            cfg = storage.bots.get(bot_id)
+            name = message.text.strip().lower()
+            cfg.shop_topics = [t for t in cfg.shop_topics if t['name'].lower() != name]
+            storage.save()
+            await message.answer("✅ Удалено", reply_markup=build_topics_menu())
+            await state.clear()
+
+        @router.callback_query(F.data == "topic_list")
+        async def topic_list(callback: types.CallbackQuery):
+            cfg = storage.bots.get(bot_id)
+            if cfg.shop_topics:
+                text = "\n".join([f"• {t['name']} (ID: {t['thread_id']})" for t in cfg.shop_topics])
+            else:
+                text = "(нет)"
+            await callback.message.edit_text(f"📁 Темы:\n{text}", reply_markup=build_topics_menu())
+            await callback.answer()
+
+    if bot_id == "main":
+        @router.callback_query(F.data == "adm_reset_rates")
+        async def adm_reset_rates(callback: types.CallbackQuery):
+            if callback.from_user.id != MAIN_ADMIN_ID:
+                await callback.answer("Нет доступа", show_alert=True)
+                return
+            reset_exchange_rates()
+            await callback.answer("✅ Курсы сброшены", show_alert=True)
+            await callback.message.edit_text("Админ-панель:", reply_markup=build_admin_menu(callback.from_user.id, bot_id))
+
+        @router.callback_query(F.data == "adm_reset_top")
+        async def adm_reset_top(callback: types.CallbackQuery):
+            if callback.from_user.id != MAIN_ADMIN_ID:
+                await callback.answer("Нет доступа", show_alert=True)
+                return
+            for u in storage.users.values():
+                u.show_in_top[bot_id] = False
+            storage.save()
+            await callback.answer("✅ Топ сброшен", show_alert=True)
+            await callback.message.edit_text("Админ-панель:", reply_markup=build_admin_menu(callback.from_user.id, bot_id))
+
+    @router.callback_query(F.data == "adm_balance")
+    async def adm_balance(callback: types.CallbackQuery):
+        cfg = storage.bots.get(bot_id)
+        bal = get_balance(callback.from_user.id, bot_id)
+        bal_str = "∞" if bal == float('inf') else f"{bal:.0f}"
+        await callback.message.edit_text(
+            f"💳 Баланс: {bal_str} {cfg.currency_emoji}",
+            reply_markup=build_admin_menu(callback.from_user.id, bot_id)
+        )
+        await callback.answer()
+
+    dp.include_router(router)
+
+# ====================== BOT CONNECTION ======================
+def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
+    router = Router()
+
+    @router.callback_query(F.data == "connect_bot")
+    async def cb_connect(callback: types.CallbackQuery, state: FSMContext):
+        await callback.message.edit_text("🤖 Отправьте ссылку на ваш канал:", reply_markup=build_cancel_kb())
+        await state.set_state(ConnectBotStates.WaitingChannelUrl)
+        await callback.answer()
+
+    @router.message(ConnectBotStates.WaitingChannelUrl)
+    async def connect_channel(message: types.Message, state: FSMContext):
+        request_id = str(uuid.uuid4())[:8]
+        request = PendingBotRequest(
+            request_id=request_id,
+            user_id=message.from_user.id,
+            channel_url=message.text.strip()
+        )
+        storage.pending_requests[request_id] = request
+        storage.save()
+
+        user = storage.users.get(message.from_user.id)
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Одобрить", callback_data=f"req_ok_{request_id}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"req_no_{request_id}")
+            ]
+        ])
+        try:
+            await bot_instance.send_message(
+                MAIN_ADMIN_ID,
+                f"📝 Заявка на подключение\nОт: @{user.username if user else '?'}\nКанал: {message.text}",
+                reply_markup=kb
+            )
+        except: pass
+        await message.answer("✅ Заявка отправлена!", reply_markup=build_main_menu("main"))
+        await state.clear()
+
+    @router.callback_query(F.data.startswith("req_ok_"))
+    async def req_approve(callback: types.CallbackQuery):
+        if callback.from_user.id != MAIN_ADMIN_ID:
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        rid = callback.data[7:]
+        req = storage.pending_requests.get(rid)
+        if not req:
+            await callback.answer("Не найдено", show_alert=True)
+            return
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Да", callback_data=f"req_confirm_{rid}"),
+                InlineKeyboardButton(text="❌ Нет", callback_data=f"req_back_{rid}")
+            ]
+        ])
+        await callback.message.edit_text("Вы уверены?", reply_markup=kb)
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("req_back_"))
+    async def req_back(callback: types.CallbackQuery):
+        rid = callback.data[9:]
+        req = storage.pending_requests.get(rid)
+        if req:
+            user = storage.users.get(req.user_id)
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Одобрить", callback_data=f"req_ok_{rid}"),
+                    InlineKeyboardButton(text="❌ Отклонить", callback_data=f"req_no_{rid}")
+                ]
+            ])
+            await callback.message.edit_text(
+                f"📝 Заявка\nОт: @{user.username if user else '?'}\nКанал: {req.channel_url}",
+                reply_markup=kb
+            )
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("req_confirm_"))
+    async def req_confirm(callback: types.CallbackQuery):
+        if callback.from_user.id != MAIN_ADMIN_ID:
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        rid = callback.data[12:]
+        req = storage.pending_requests.get(rid)
+        if not req:
+            await callback.answer("Не найдено", show_alert=True)
+            return
+
+        req.status = "token_wait"
+        storage.waiting_for_token[req.user_id] = rid
+        storage.save()
+
+        try:
+            await bot_instance.send_message(
+                req.user_id,
+                "✅ Заявка одобрена!\n\nОтправьте токен бота от @BotFather:"
+            )
+            await callback.message.edit_text("⏳ Ожидаем токен...")
+        except Exception as e:
+            await callback.message.edit_text(f"❌ Ошибка: {e}")
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("req_no_"))
+    async def req_reject(callback: types.CallbackQuery):
+        if callback.from_user.id != MAIN_ADMIN_ID:
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        rid = callback.data[7:]
+        req = storage.pending_requests.get(rid)
+        if req:
+            try:
+                await bot_instance.send_message(req.user_id, "❌ Заявка отклонена")
+            except: pass
+            del storage.pending_requests[rid]
+            storage.save()
+        await callback.message.edit_text("❌ Отклонено")
+        await callback.answer()
+
+    @router.message(F.text.regexp(r'^\d{8,10}:[A-Za-z0-9_-]{35,}$'))
+    async def receive_token(message: types.Message, state: FSMContext):
+        uid = message.from_user.id
+        if uid not in storage.waiting_for_token:
+            return
+
+        rid = storage.waiting_for_token[uid]
+        req = storage.pending_requests.get(rid)
+        if not req or req.status != "token_wait":
+            del storage.waiting_for_token[uid]
+            return
+
+        token = message.text.strip()
+        try:
+            test_bot = Bot(token=token)
+            info = await test_bot.get_me()
+            await test_bot.session.close()
+
+            req.token = token
+            req.status = "configuring"
+            del storage.waiting_for_token[uid]
+            storage.save()
+
+            await state.update_data(request_id=rid)
+            await message.answer(f"✅ Бот @{info.username}\n\nНазвание валюты:")
+            await state.set_state(ConnectBotStates.WaitingCurrencyName)
+
+            try:
+                await bot_instance.send_message(MAIN_ADMIN_ID, f"✅ Токен получен: @{info.username}")
+            except: pass
+        except Exception as e:
+            await message.answer(f"❌ Неверный токен: {e}\nПопробуйте снова:")
+
+    @router.message(ConnectBotStates.WaitingCurrencyName)
+    async def currency_name(message: types.Message, state: FSMContext):
+        data = await state.get_data()
+        req = storage.pending_requests.get(data.get('request_id'))
+        if req:
+            req.currency_name = message.text.strip()
+            storage.save()
+        await message.answer("Эмодзи валюты (💎, 🪙, ⭐):")
+        await state.set_state(ConnectBotStates.WaitingCurrencyEmoji)
+
+    @router.message(ConnectBotStates.WaitingCurrencyEmoji)
+    async def currency_emoji(message: types.Message, state: FSMContext):
+        data = await state.get_data()
+        req = storage.pending_requests.get(data.get('request_id'))
+        if req:
+            req.currency_emoji = message.text.strip()
+            storage.save()
+        await message.answer("Выберите модули:", reply_markup=build_modules_kb())
+        await state.set_state(ConnectBotStates.WaitingModules)
+
+    @router.callback_query(ConnectBotStates.WaitingModules, F.data.startswith("mod_"))
+    async def select_modules(callback: types.CallbackQuery, state: FSMContext):
+        mod = callback.data[4:]
+        data = await state.get_data()
+        req = storage.pending_requests.get(data.get('request_id'))
+        if not req:
+            await callback.answer("Ошибка", show_alert=True)
+            return
+
+        if mod == "takes":
+            req.modules = ["takes"]
+            storage.save()
+            await callback.message.edit_text("Ссылка на канал для тейков (@channel):")
+            await state.set_state(ConnectBotStates.WaitingTakesChannel)
+        elif mod == "shop":
+            req.modules = ["shop"]
+            storage.save()
+            await callback.message.edit_text("Ссылка на группу магазина (@group):")
+            await state.set_state(ConnectBotStates.WaitingShopChannel)
+        else:
+            req.modules = ["takes", "shop"]
+            storage.save()
+            await callback.message.edit_text("Сначала канал для тейков (@channel):")
+            await state.set_state(ConnectBotStates.WaitingTakesChannel)
+        await callback.answer()
+
+    @router.message(ConnectBotStates.WaitingTakesChannel)
+    async def takes_channel(message: types.Message, state: FSMContext):
+        data = await state.get_data()
+        req = storage.pending_requests.get(data.get('request_id'))
+        if not req:
+            return
+
+        channel = message.text.strip()
+        if not channel.startswith("@"):
+            channel = "@" + channel.replace("https://t.me/", "")
+        req.takes_channel = channel
+        storage.save()
+
+        if "shop" in req.modules:
+            await message.answer("Теперь группа магазина (@group):")
+            await state.set_state(ConnectBotStates.WaitingShopChannel)
+        else:
+            await finish_setup(message, state, req, bot_instance)
+
+    @router.message(ConnectBotStates.WaitingShopChannel)
+    async def shop_channel(message: types.Message, state: FSMContext):
+        data = await state.get_data()
+        req = storage.pending_requests.get(data.get('request_id'))
+        if not req:
+            return
+
+        channel = message.text.strip()
+        if not channel.startswith("@"):
+            channel = "@" + channel.replace("https://t.me/", "")
+        req.shop_channel = channel
+        storage.save()
+
+        await finish_setup(message, state, req, bot_instance)
+
+    async def finish_setup(message, state, req, main_bot):
+        await message.answer("⏳ Запускаю бота...")
+
+        try:
+            bot_id = f"bot_{req.user_id}_{int(datetime.now().timestamp())}"
+
+            config = BotConfig(
+                bot_id=bot_id,
+                token=req.token,
+                currency_name=req.currency_name,
+                currency_emoji=req.currency_emoji,
+                channel_url=req.channel_url,
+                takes_channel=req.takes_channel,
+                shop_channel=req.shop_channel,
+                modules=req.modules,
+                owner_id=req.user_id,
+                base_exchange_rate=0.5
+            )
+
+            storage.bots[bot_id] = config
+
+            user = storage.users.get(req.user_id)
+            if user:
+                user.is_owner[bot_id] = True
+                user.is_admin[bot_id] = True
+                user.balances[bot_id] = float('inf')
+                user.quiz_passed[bot_id] = False
+                user.takes_timestamps[bot_id] = []
+                user.show_in_top[bot_id] = True
+                user.is_blocked[bot_id] = False
+                user.is_frozen[bot_id] = False
+                user.is_moderator[bot_id] = False
+
+            storage.exchange_rates.rates[bot_id] = 0.5
+
+            if req.request_id in storage.pending_requests:
+                del storage.pending_requests[req.request_id]
+            storage.save()
+
+            new_bot = Bot(token=req.token)
+            new_dp = Dispatcher(storage=MemoryStorage())
+            create_bot_handlers(bot_id, new_bot, new_dp)
+
+            storage.active_bots[bot_id] = new_bot
+            storage.active_dispatchers[bot_id] = new_dp
+
+            asyncio.create_task(new_dp.start_polling(new_bot))
+
+            mods = ", ".join(req.modules)
+            await message.answer(
+                f"✅ Бот подключён!\n\n"
+                f"💰 Валюта: {req.currency_name} {req.currency_emoji}\n"
+                f"📦 Модули: {mods}\n\n"
+                f"Вы — владелец с ∞ балансом.\nПерейдите в бота и /start",
+                reply_markup=build_main_menu("main")
+            )
+
+            try:
+                await main_bot.send_message(MAIN_ADMIN_ID, f"✅ Бот {bot_id} запущен!")
+            except: pass
+
+        except Exception as e:
+            logger.error(f"Setup error: {e}")
+            await message.answer(f"❌ Ошибка: {e}", reply_markup=build_main_menu("main"))
+
+        await state.clear()
+
+    dp.include_router(router)
+
+# ====================== MAIN ======================
+async def main():
+    storage.load()
+
+    main_bot = Bot(token=MAIN_BOT_TOKEN)
+    main_dp = Dispatcher(storage=MemoryStorage())
+
+    create_bot_handlers("main", main_bot, main_dp)
+    create_connection_handlers(main_bot, main_dp)
+
+    storage.active_bots["main"] = main_bot
+    storage.active_dispatchers["main"] = main_dp
+
+    for bot_id, config in storage.bots.items():
+        if bot_id != "main":
+            try:
+                connected_bot = Bot(token=config.token)
+                connected_dp = Dispatcher(storage=MemoryStorage())
+                create_bot_handlers(bot_id, connected_bot, connected_dp)
+                storage.active_bots[bot_id] = connected_bot
+                storage.active_dispatchers[bot_id] = connected_dp
+                asyncio.create_task(connected_dp.start_polling(connected_bot))
+                logger.info(f"Started bot: {bot_id}")
+            except Exception as e:
+                logger.error(f"Error starting {bot_id}: {e}")
+
+    logger.info("Starting main bot...")
+    await main_dp.start_polling(main_bot)
 
 if __name__ == "__main__":
-    print("🚀 Запуск бота...")
+    print("🚀 Запуск...")
     asyncio.run(main())
