@@ -5,6 +5,7 @@ import json
 import os
 import uuid
 import sqlite3
+import sys
 from typing import Dict, Any, List, Tuple, Optional
 from html import escape as html_escape
 from datetime import datetime, timedelta
@@ -18,6 +19,16 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, User, MessageEntity
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+# ====================== ЛОГИРОВАНИЕ ======================
+
+sys.stdout.reconfigure(line_buffering=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    stream=sys.stdout
+)
+logger = logging.getLogger(__name__)
+
 # ====================== КОНФИГУРАЦИЯ ======================
 
 MAIN_BOT_TOKEN = "8216288128:AAHWCLpy-tPcFKjbpM2hUN1xt6P850mi5qE"
@@ -25,9 +36,6 @@ MAIN_ADMIN_ID = 6098677257
 ADMIN_IDS = {6098677257, 8092280284, 8366347415}
 DB_FILE = "bot_database.db"
 CONFIG_FILE = "bot_config.json"
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 TG_LINK_PATTERN = re.compile(
     r'(?:https?://)?(?:t\.me|telegram\.me)/(?:joinchat/)?([a-zA-Z0-9_]+)',
@@ -54,16 +62,16 @@ class Database:
 
     def _create_tables(self):
         """Создание всех таблиц если не существуют."""
-        c = self.conn.cursor()
+        cursor = self.conn.cursor()
 
-        c.execute('''CREATE TABLE IF NOT EXISTS users (
+        cursor.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             username TEXT NOT NULL DEFAULT '',
             name TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL DEFAULT ''
         )''')
 
-        c.execute('''CREATE TABLE IF NOT EXISTS balances (
+        cursor.execute('''CREATE TABLE IF NOT EXISTS balances (
             user_id INTEGER NOT NULL,
             bot_id TEXT NOT NULL,
             balance REAL NOT NULL DEFAULT 0,
@@ -71,7 +79,7 @@ class Database:
             PRIMARY KEY (user_id, bot_id)
         )''')
 
-        c.execute('''CREATE TABLE IF NOT EXISTS user_bot_data (
+        cursor.execute('''CREATE TABLE IF NOT EXISTS user_bot_data (
             user_id INTEGER NOT NULL,
             bot_id TEXT NOT NULL,
             quiz_passed INTEGER NOT NULL DEFAULT 0,
@@ -86,7 +94,7 @@ class Database:
             PRIMARY KEY (user_id, bot_id)
         )''')
 
-        c.execute('''CREATE TABLE IF NOT EXISTS take_timestamps (
+        cursor.execute('''CREATE TABLE IF NOT EXISTS take_timestamps (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
             bot_id TEXT NOT NULL,
@@ -99,29 +107,35 @@ class Database:
 
     def get_user(self, user_id: int) -> Optional[Dict]:
         """Получить данные пользователя."""
-        c = self.conn.cursor()
-        c.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
-        row = c.fetchone()
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+        row = cursor.fetchone()
         return dict(row) if row else None
 
     def create_or_update_user(self, user_id: int, username: str, name: str):
         """Создать или обновить пользователя."""
         now = datetime.now().isoformat()
-        c = self.conn.cursor()
-        c.execute('INSERT OR IGNORE INTO users (user_id, username, name, created_at) VALUES (?, ?, ?, ?)',
-                  (user_id, username, name, now))
-        c.execute('UPDATE users SET username = ?, name = ? WHERE user_id = ?',
-                  (username, name, user_id))
+        cursor = self.conn.cursor()
+        cursor.execute(
+            'INSERT OR IGNORE INTO users (user_id, username, name, created_at) VALUES (?, ?, ?, ?)',
+            (user_id, username, name, now)
+        )
+        cursor.execute(
+            'UPDATE users SET username = ?, name = ? WHERE user_id = ?',
+            (username, name, user_id)
+        )
         self.conn.commit()
 
     # --- Балансы ---
 
     def get_balance(self, user_id: int, bot_id: str) -> float:
         """Получить баланс пользователя в конкретном боте."""
-        c = self.conn.cursor()
-        c.execute('SELECT balance, is_infinite FROM balances WHERE user_id = ? AND bot_id = ?',
-                  (user_id, bot_id))
-        row = c.fetchone()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            'SELECT balance, is_infinite FROM balances WHERE user_id = ? AND bot_id = ?',
+            (user_id, bot_id)
+        )
+        row = cursor.fetchone()
         if not row:
             return 0
         return float('inf') if row['is_infinite'] else row['balance']
@@ -130,9 +144,11 @@ class Database:
         """Установить баланс."""
         is_inf = 1 if balance == float('inf') else 0
         val = 0 if is_inf else balance
-        c = self.conn.cursor()
-        c.execute('INSERT OR REPLACE INTO balances (user_id, bot_id, balance, is_infinite) VALUES (?, ?, ?, ?)',
-                  (user_id, bot_id, val, is_inf))
+        cursor = self.conn.cursor()
+        cursor.execute(
+            'INSERT OR REPLACE INTO balances (user_id, bot_id, balance, is_infinite) VALUES (?, ?, ?, ?)',
+            (user_id, bot_id, val, is_inf)
+        )
         self.conn.commit()
 
     def add_balance(self, user_id: int, bot_id: str, amount: float) -> bool:
@@ -153,19 +169,16 @@ class Database:
         self.set_balance(user_id, bot_id, current - amount)
         return True
 
-    def get_all_balances(self, user_id: int) -> List[Dict]:
-        """Все балансы пользователя во всех ботах."""
-        c = self.conn.cursor()
-        c.execute('SELECT bot_id, balance, is_infinite FROM balances WHERE user_id = ?', (user_id,))
-        return [dict(row) for row in c.fetchall()]
-
     # --- Данные пользователя для бота ---
 
     def get_bot_data(self, user_id: int, bot_id: str) -> Dict:
         """Получить данные пользователя для конкретного бота."""
-        c = self.conn.cursor()
-        c.execute('SELECT * FROM user_bot_data WHERE user_id = ? AND bot_id = ?', (user_id, bot_id))
-        row = c.fetchone()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            'SELECT * FROM user_bot_data WHERE user_id = ? AND bot_id = ?',
+            (user_id, bot_id)
+        )
+        row = cursor.fetchone()
         if row:
             return dict(row)
         return {
@@ -180,8 +193,8 @@ class Database:
         """Обновить данные пользователя для бота."""
         existing = self.get_bot_data(user_id, bot_id)
         existing.update(kwargs)
-        c = self.conn.cursor()
-        c.execute('''INSERT OR REPLACE INTO user_bot_data
+        cursor = self.conn.cursor()
+        cursor.execute('''INSERT OR REPLACE INTO user_bot_data
             (user_id, bot_id, quiz_passed, show_in_top, is_blocked, is_frozen,
              is_moderator, is_admin, is_owner, activated_at, last_promo_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
@@ -195,36 +208,40 @@ class Database:
 
     def get_last_take_time(self, user_id: int, bot_id: str) -> Optional[str]:
         """Время последнего тейка."""
-        c = self.conn.cursor()
-        c.execute('SELECT timestamp FROM take_timestamps WHERE user_id = ? AND bot_id = ? ORDER BY id DESC LIMIT 1',
-                  (user_id, bot_id))
-        row = c.fetchone()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            'SELECT timestamp FROM take_timestamps WHERE user_id = ? AND bot_id = ? ORDER BY id DESC LIMIT 1',
+            (user_id, bot_id)
+        )
+        row = cursor.fetchone()
         return row['timestamp'] if row else None
 
     def add_take_timestamp(self, user_id: int, bot_id: str):
         """Записать время отправки тейка."""
-        c = self.conn.cursor()
-        c.execute('INSERT INTO take_timestamps (user_id, bot_id, timestamp) VALUES (?, ?, ?)',
-                  (user_id, bot_id, datetime.now().isoformat()))
+        cursor = self.conn.cursor()
+        cursor.execute(
+            'INSERT INTO take_timestamps (user_id, bot_id, timestamp) VALUES (?, ?, ?)',
+            (user_id, bot_id, datetime.now().isoformat())
+        )
         # Оставляем только последние 20 записей
-        c.execute('''DELETE FROM take_timestamps WHERE id NOT IN (
+        cursor.execute('''DELETE FROM take_timestamps WHERE id NOT IN (
             SELECT id FROM take_timestamps WHERE user_id = ? AND bot_id = ? ORDER BY id DESC LIMIT 20
         ) AND user_id = ? AND bot_id = ?''', (user_id, bot_id, user_id, bot_id))
         self.conn.commit()
 
-    # --- Списки пользователей ---
+    # --- Списки ---
 
     def get_all_users_for_bot(self, bot_id: str) -> List[Dict]:
         """Все пользователи с балансами в конкретном боте."""
-        c = self.conn.cursor()
-        c.execute('''SELECT u.user_id, u.username, u.name, 
+        cursor = self.conn.cursor()
+        cursor.execute('''SELECT u.user_id, u.username, u.name,
                      COALESCE(b.balance, 0) as balance, COALESCE(b.is_infinite, 0) as is_infinite,
                      COALESCE(d.show_in_top, 1) as show_in_top, COALESCE(d.is_owner, 0) as is_owner
                      FROM users u
                      LEFT JOIN balances b ON u.user_id = b.user_id AND b.bot_id = ?
                      LEFT JOIN user_bot_data d ON u.user_id = d.user_id AND d.bot_id = ?
                      WHERE b.balance IS NOT NULL OR b.is_infinite = 1''', (bot_id, bot_id))
-        return [dict(row) for row in c.fetchall()]
+        return [dict(row) for row in cursor.fetchall()]
 
     def find_user_by_input(self, input_str: str) -> Optional[int]:
         """Найти пользователя по username, имени или ID."""
@@ -235,10 +252,12 @@ class Database:
                 return uid
         except ValueError:
             pass
-        c = self.conn.cursor()
-        c.execute('SELECT user_id FROM users WHERE LOWER(username) = ? OR LOWER(name) = ?',
-                  (input_str, input_str))
-        row = c.fetchone()
+        cursor = self.conn.cursor()
+        cursor.execute(
+            'SELECT user_id FROM users WHERE LOWER(username) = ? OR LOWER(name) = ?',
+            (input_str, input_str)
+        )
+        row = cursor.fetchone()
         return row['user_id'] if row else None
 
 
@@ -339,13 +358,17 @@ class ConfigStorage:
         # Создаём главного бота если нет
         if "main" not in self.bots:
             self.bots["main"] = BotConfig(
-                bot_id="main", token=MAIN_BOT_TOKEN,
-                currency_name="луны", currency_emoji="🌗",
+                bot_id="main",
+                token=MAIN_BOT_TOKEN,
+                currency_name="луны",
+                currency_emoji="🌗",
                 channel_url="https://t.me/WINGSOFFIRECHANNEL",
                 takes_channel="@WINGSOFFIRECHANNEL",
                 shop_channel="@wingsoffiremagazine",
-                modules=["takes", "shop"], take_cooldown_minutes=3,
-                owner_id=MAIN_ADMIN_ID, base_exchange_rate=1.0
+                modules=["takes", "shop"],
+                take_cooldown_minutes=3,
+                owner_id=MAIN_ADMIN_ID,
+                base_exchange_rate=1.0
             )
             self.exchange_rates.rates["main"] = 1.0
             self.save()
@@ -386,9 +409,6 @@ class AdminStates(StatesGroup):
     WaitingRemoveMarkerWord = State()
     WaitingModeratorUsername = State()
     WaitingRemoveModeratorUsername = State()
-    WaitingTopicName = State()
-    WaitingTopicThreadId = State()
-    WaitingRemoveTopic = State()
     WaitingQuizQuestion = State()
     WaitingQuizReward = State()
     WaitingQuizAnswer = State()
@@ -435,7 +455,6 @@ class QuizStates(StatesGroup):
     Question2 = State()
     Question3 = State()
 
-
 # ====================== ЦЕНЗУРА ======================
 
 _PFX = r'(?:за|на|по|от|об|до|у|о|вы|пере|при|рас|раз|про|недо|пре|с|ис|из)?'
@@ -445,13 +464,32 @@ BASE_PROFANITY_PATTERNS = [
     _PFX + r'ху[йяеёюи]\w*',
     _PFX + r'пизд\w*',
     _PFX_EB + r'[её]б\w*',
-    r'бля[дт]\w*', r'сук[аиуе]\w*', r'суч[каеьи]\w*',
-    r'муда[кч]\w*', r'мудил\w*', r'мудозвон\w*',
-    r'пидор\w*', r'пидар\w*', r'пидр\w*', r'педик\w*', r'педераст\w*',
-    r'шлюх\w*', r'гандон\w*', r'залуп\w*', r'дроч\w*', r'манд[аоуеёяи]\w*',
-    r'[её]бл[ао]\w*', r'[её]бну\w*', r'[её]бан\w*',
-    r'хер[а-яё]*\w*', r'жоп[аеуы]\w*', r'срать?\w*', r'сран\w*',
-    r'говн[оа]\w*', r'засранец\w*', r'засранк[аи]\w*',
+    r'бля[дт]\w*',
+    r'сук[аиуе]\w*',
+    r'суч[каеьи]\w*',
+    r'муда[кч]\w*',
+    r'мудил\w*',
+    r'мудозвон\w*',
+    r'пидор\w*',
+    r'пидар\w*',
+    r'пидр\w*',
+    r'педик\w*',
+    r'педераст\w*',
+    r'шлюх\w*',
+    r'гандон\w*',
+    r'залуп\w*',
+    r'дроч\w*',
+    r'манд[аоуеёяи]\w*',
+    r'[её]бл[ао]\w*',
+    r'[её]бну\w*',
+    r'[её]бан\w*',
+    r'хер[а-яё]*\w*',
+    r'жоп[аеуы]\w*',
+    r'срать?\w*',
+    r'сран\w*',
+    r'говн[оа]\w*',
+    r'засранец\w*',
+    r'засранк[аи]\w*',
 ]
 
 
@@ -525,15 +563,15 @@ def register_user(user: User, bot_id: str):
 
     existing = db.get_bot_data(uid, bot_id)
     if not existing.get('activated_at'):
-        bot_config = config.bots.get(bot_id)
-        is_owner_flag = bot_config and bot_config.owner_id == uid
+        bot_cfg = config.bots.get(bot_id)
+        is_owner_flag = bot_cfg and bot_cfg.owner_id == uid
         is_admin_flag = bot_id == "main" and uid in ADMIN_IDS
         is_main_owner = bot_id == "main" and uid == MAIN_ADMIN_ID
 
         if is_owner_flag or is_main_owner:
             db.set_balance(uid, bot_id, float('inf'))
         elif is_admin_flag:
-            db.set_balance(uid, bot_id, bot_config.admin_starting_balance)
+            db.set_balance(uid, bot_id, bot_cfg.admin_starting_balance)
         else:
             db.set_balance(uid, bot_id, 0)
 
@@ -566,8 +604,8 @@ def check_moderator(uid: int, bot_id: str) -> bool:
 
 def can_send_take(uid: int, bot_id: str) -> Tuple[bool, str]:
     """Проверка кулдауна тейков (1 в N минут)."""
-    bot_config = config.bots.get(bot_id)
-    if not bot_config:
+    bot_cfg = config.bots.get(bot_id)
+    if not bot_cfg:
         return False, "Ошибка конфигурации"
 
     last = db.get_last_take_time(uid, bot_id)
@@ -579,7 +617,7 @@ def can_send_take(uid: int, bot_id: str) -> Tuple[bool, str]:
     except Exception:
         return True, "Можно отправить"
 
-    next_available = last_dt + timedelta(minutes=bot_config.take_cooldown_minutes)
+    next_available = last_dt + timedelta(minutes=bot_cfg.take_cooldown_minutes)
     now = datetime.now()
 
     if now >= next_available:
@@ -646,8 +684,8 @@ def do_transfer(sender_id: int, receiver_id: int, bot_id: str, amount: float) ->
 def get_exchange_rate(bot_id: str) -> float:
     """Получить текущий курс валюты."""
     if config.exchange_rates.rates_locked:
-        bot_config = config.bots.get(bot_id)
-        return bot_config.base_exchange_rate if bot_config else 0.5
+        bot_cfg = config.bots.get(bot_id)
+        return bot_cfg.base_exchange_rate if bot_cfg else 0.5
     return config.exchange_rates.rates.get(bot_id, 0.5)
 
 
@@ -672,9 +710,9 @@ def reset_all_rates():
     """Сброс и блокировка курсов."""
     config.exchange_rates.rates_locked = True
     config.exchange_rates.rates = {"main": 1.0}
-    for bot_id, bot_config in config.bots.items():
+    for bot_id, bot_cfg in config.bots.items():
         if bot_id != "main":
-            config.exchange_rates.rates[bot_id] = bot_config.base_exchange_rate
+            config.exchange_rates.rates[bot_id] = bot_cfg.base_exchange_rate
     config.save()
 
 
@@ -682,38 +720,57 @@ def serialize_entities(entities) -> Optional[List[Dict]]:
     """Сериализация entities для сохранения."""
     if not entities:
         return None
-    return [{'type': e.type, 'offset': e.offset, 'length': e.length,
-             'url': e.url, 'language': e.language, 'custom_emoji_id': e.custom_emoji_id}
-            for e in entities]
+    return [
+        {
+            'type': e.type, 'offset': e.offset, 'length': e.length,
+            'url': e.url, 'language': e.language, 'custom_emoji_id': e.custom_emoji_id
+        }
+        for e in entities
+    ]
 
 
 def restore_entities(data: Optional[List[Dict]]) -> Optional[List[MessageEntity]]:
     """Восстановление entities из сохранённых данных."""
     if not data:
         return None
-    result = [MessageEntity(type=e['type'], offset=e['offset'], length=e['length'],
-              url=e.get('url'), language=e.get('language'), custom_emoji_id=e.get('custom_emoji_id'))
-              for e in data]
+    result = [
+        MessageEntity(
+            type=e['type'], offset=e['offset'], length=e['length'],
+            url=e.get('url'), language=e.get('language'),
+            custom_emoji_id=e.get('custom_emoji_id')
+        )
+        for e in data
+    ]
     return result if result else None
 
 
 # ====================== ВСТРОЕННАЯ ВИКТОРИНА ======================
 
 BUILT_IN_QUIZ = {
-    1: {"question": "Кто должен был быть на месте Ореолы?",
-        "answers": ["Небесный", "Ледяной", "Радужный"], "correct": 0},
-    2: {"question": "Кто был отцом Мракокрада?",
-        "answers": ["Гений", "Вдумчивый", "Арктик"], "correct": 2},
-    3: {"question": "Кто убивал дочерей Коралл?",
-        "answers": ["Мальстрём", "Орка", "Акула"], "correct": 1},
+    1: {
+        "question": "Кто должен был быть на месте Ореолы?",
+        "answers": ["Небесный", "Ледяной", "Радужный"],
+        "correct": 0
+    },
+    2: {
+        "question": "Кто был отцом Мракокрада?",
+        "answers": ["Гений", "Вдумчивый", "Арктик"],
+        "correct": 2
+    },
+    3: {
+        "question": "Кто убивал дочерей Коралл?",
+        "answers": ["Мальстрём", "Орка", "Акула"],
+        "correct": 1
+    },
 }
+
 
 # ====================== КЛАВИАТУРЫ ======================
 
 def build_main_menu(bot_id: str) -> InlineKeyboardMarkup:
     """Главное меню бота."""
-    bot_config = config.bots.get(bot_id)
-    if not bot_config:
+    bot_cfg = config.bots.get(bot_id)
+    if not bot_cfg:
         return InlineKeyboardMarkup(inline_keyboard=[])
 
     builder = InlineKeyboardBuilder()
@@ -725,9 +782,9 @@ def build_main_menu(bot_id: str) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🏆 Топ", callback_data="top"),
         InlineKeyboardButton(text="💳 Баланс", callback_data="balance")
     )
-    if "takes" in bot_config.modules:
+    if "takes" in bot_cfg.modules:
         builder.row(InlineKeyboardButton(text="📝 Отправить тейк", callback_data="send_take"))
-    if "shop" in bot_config.modules:
+    if "shop" in bot_cfg.modules:
         builder.row(InlineKeyboardButton(text="🛒 Магазин", callback_data="shop"))
     builder.row(
         InlineKeyboardButton(text="💱 Конвертация", callback_data="convert"),
@@ -740,12 +797,12 @@ def build_main_menu(bot_id: str) -> InlineKeyboardMarkup:
 
 def build_shop_menu(bot_id: str) -> InlineKeyboardMarkup:
     """Меню магазина."""
-    bot_config = config.bots.get(bot_id)
+    bot_cfg = config.bots.get(bot_id)
     builder = InlineKeyboardBuilder()
-    if bot_config and "takes" in bot_config.modules:
+    if bot_cfg and "takes" in bot_cfg.modules:
         builder.row(InlineKeyboardButton(text="📢 Пиар (10/час)", callback_data="promo_regular"))
         builder.row(InlineKeyboardButton(text="📌 Пиар с закрепом (25/час)", callback_data="promo_pinned"))
-    if bot_config and "shop" in bot_config.modules:
+    if bot_cfg and "shop" in bot_cfg.modules:
         builder.row(InlineKeyboardButton(text="🛍 Купить товар", callback_data="buy_product"))
     builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="back_main"))
     return builder.as_markup()
@@ -754,7 +811,7 @@ def build_shop_menu(bot_id: str) -> InlineKeyboardMarkup:
 def build_admin_menu(uid: int, bot_id: str) -> InlineKeyboardMarkup:
     """Админ-панель."""
     builder = InlineKeyboardBuilder()
-    bot_config = config.bots.get(bot_id)
+    bot_cfg = config.bots.get(bot_id)
     is_owner_user = check_owner(uid, bot_id)
     is_main = uid == MAIN_ADMIN_ID and bot_id == "main"
 
@@ -772,17 +829,14 @@ def build_admin_menu(uid: int, bot_id: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="👮 Модераторы", callback_data="adm_mods")
         )
 
-        if bot_config and "takes" in bot_config.modules:
-            pause_label = "▶️ Включить тейки" if bot_config.takes_paused else "⏸ Отключить тейки"
+        if bot_cfg and "takes" in bot_cfg.modules:
+            pause_label = "▶️ Включить тейки" if bot_cfg.takes_paused else "⏸ Отключить тейки"
             builder.row(InlineKeyboardButton(text=pause_label, callback_data="adm_toggle_takes"))
 
-            manual_label = "🔓 Авто-контроль" if bot_config.manual_control else "🔒 Ручной контроль"
+            manual_label = "🔓 Авто-контроль" if bot_cfg.manual_control else "🔒 Ручной контроль"
             builder.row(InlineKeyboardButton(text=manual_label, callback_data="adm_toggle_manual"))
 
             builder.row(InlineKeyboardButton(text="🎯 Провести викторину", callback_data="adm_channel_quiz"))
-
-        if bot_config and "shop" in bot_config.modules:
-            builder.row(InlineKeyboardButton(text="📁 Темы магазина", callback_data="adm_topics"))
 
         if is_main:
             builder.row(
@@ -797,13 +851,15 @@ def build_admin_menu(uid: int, bot_id: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def build_cancel_kb() -> InlineKeyboardMarkup:
+def build_cancel_keyboard() -> InlineKeyboardMarkup:
+    """Кнопка отмены."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")]
     ])
 
 
 def build_censor_menu() -> InlineKeyboardMarkup:
+    """Меню цензуры."""
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="➕ Слово", callback_data="censor_add"),
@@ -820,20 +876,8 @@ def build_censor_menu() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def build_topics_menu() -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="➕ Добавить", callback_data="topic_add"),
-        InlineKeyboardButton(text="➖ Удалить", callback_data="topic_del")
-    )
-    builder.row(
-        InlineKeyboardButton(text="📋 Список", callback_data="topic_list"),
-        InlineKeyboardButton(text="◀️ Назад", callback_data="admin_mode")
-    )
-    return builder.as_markup()
-
-
 def build_mods_menu() -> InlineKeyboardMarkup:
+    """Меню модераторов."""
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="➕ Назначить", callback_data="mod_assign"),
@@ -846,19 +890,21 @@ def build_mods_menu() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def build_currency_kb(exclude: str = None) -> InlineKeyboardMarkup:
+def build_currency_keyboard(exclude: str = None) -> InlineKeyboardMarkup:
+    """Выбор валюты для конвертации."""
     builder = InlineKeyboardBuilder()
-    for bot_id, bot_config in config.bots.items():
+    for bot_id, bot_cfg in config.bots.items():
         if bot_id != exclude:
             builder.row(InlineKeyboardButton(
-                text=f"{bot_config.currency_name} {bot_config.currency_emoji}",
+                text=f"{bot_cfg.currency_name} {bot_cfg.currency_emoji}",
                 callback_data=f"currency_{bot_id}"
             ))
     builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"))
     return builder.as_markup()
 
 
-def build_modules_kb() -> InlineKeyboardMarkup:
+def build_modules_keyboard() -> InlineKeyboardMarkup:
+    """Выбор модулей при подключении бота."""
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="📝 Только тейки", callback_data="module_takes"))
     builder.row(InlineKeyboardButton(text="🛒 Только магазин", callback_data="module_shop"))
@@ -867,7 +913,8 @@ def build_modules_kb() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def build_take_mod_kb(take_id: str, uid: int, is_blocked: bool) -> InlineKeyboardMarkup:
+def build_take_moderation_keyboard(take_id: str, uid: int, is_blocked: bool) -> InlineKeyboardMarkup:
+    """Клавиатура модерации тейка."""
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="✅ Отправить", callback_data=f"take_approve_{take_id}"),
@@ -880,14 +927,16 @@ def build_take_mod_kb(take_id: str, uid: int, is_blocked: bool) -> InlineKeyboar
     return builder.as_markup()
 
 
-def build_promo_confirm_kb() -> InlineKeyboardMarkup:
+def build_promo_confirm_keyboard() -> InlineKeyboardMarkup:
+    """Подтверждение пиара."""
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="✅ Оплатить", callback_data="promo_pay"),
         InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")
     ]])
 
 
-def build_quiz_kb(question_num: int) -> InlineKeyboardMarkup:
+def build_quiz_keyboard(question_num: int) -> InlineKeyboardMarkup:
+    """Варианты ответов на вопрос викторины."""
     builder = InlineKeyboardBuilder()
     for i, answer in enumerate(BUILT_IN_QUIZ[question_num]["answers"]):
         builder.row(InlineKeyboardButton(text=answer, callback_data=f"quiz_{question_num}_{i}"))
@@ -899,8 +948,8 @@ def build_quiz_kb(question_num: int) -> InlineKeyboardMarkup:
 async def forward_take_to_channel(message: types.Message, bot_id: str, bot_instance: Bot) -> Optional[types.Message]:
     """Пересылает тейк в канал с цензурой мата."""
     try:
-        bot_config = config.bots.get(bot_id)
-        if not bot_config or not bot_config.takes_channel:
+        bot_cfg = config.bots.get(bot_id)
+        if not bot_cfg or not bot_cfg.takes_channel:
             return None
 
         text = message.text or message.caption or ""
@@ -911,22 +960,22 @@ async def forward_take_to_channel(message: types.Message, bot_id: str, bot_insta
         }
 
         if message.photo:
-            return await bot_instance.send_photo(bot_config.takes_channel, photo=message.photo[-1].file_id, **send_kwargs)
+            return await bot_instance.send_photo(bot_cfg.takes_channel, photo=message.photo[-1].file_id, **send_kwargs)
         elif message.video:
-            return await bot_instance.send_video(bot_config.takes_channel, video=message.video.file_id, **send_kwargs)
+            return await bot_instance.send_video(bot_cfg.takes_channel, video=message.video.file_id, **send_kwargs)
         elif message.animation:
-            return await bot_instance.send_animation(bot_config.takes_channel, animation=message.animation.file_id, **send_kwargs)
+            return await bot_instance.send_animation(bot_cfg.takes_channel, animation=message.animation.file_id, **send_kwargs)
         elif message.document:
-            return await bot_instance.send_document(bot_config.takes_channel, document=message.document.file_id, **send_kwargs)
+            return await bot_instance.send_document(bot_cfg.takes_channel, document=message.document.file_id, **send_kwargs)
         elif message.voice:
-            return await bot_instance.send_voice(bot_config.takes_channel, voice=message.voice.file_id, **send_kwargs)
+            return await bot_instance.send_voice(bot_cfg.takes_channel, voice=message.voice.file_id, **send_kwargs)
         elif message.audio:
-            return await bot_instance.send_audio(bot_config.takes_channel, audio=message.audio.file_id, **send_kwargs)
+            return await bot_instance.send_audio(bot_cfg.takes_channel, audio=message.audio.file_id, **send_kwargs)
         elif message.sticker:
-            return await bot_instance.send_sticker(bot_config.takes_channel, sticker=message.sticker.file_id)
+            return await bot_instance.send_sticker(bot_cfg.takes_channel, sticker=message.sticker.file_id)
         else:
             return await bot_instance.send_message(
-                bot_config.takes_channel,
+                bot_cfg.takes_channel,
                 censored if has_profanity else text,
                 parse_mode="HTML" if has_profanity else None
             )
@@ -977,8 +1026,8 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
     - Если новая ставка — сброс таймера
     - Без новых ставок — объявляет победителя
     """
-    bot_config = config.bots.get(bot_id)
-    if not bot_config:
+    bot_cfg = config.bots.get(bot_id)
+    if not bot_cfg:
         return
 
     try:
@@ -1013,7 +1062,10 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
                     return
 
                 try:
-                    await bot_instance.send_message(channel, str(count), reply_to_message_id=message_id)
+                    await bot_instance.send_message(
+                        channel, str(count),
+                        reply_to_message_id=message_id
+                    )
                 except Exception:
                     pass
 
@@ -1047,7 +1099,7 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
                     await bot_instance.send_message(
                         channel,
                         f"🏆 {winner_name}, вы выиграли аукцион!\n"
-                        f"💰 Ставка: {winner_amount} {bot_config.currency_emoji}",
+                        f"💰 Ставка: {winner_amount} {bot_cfg.currency_emoji}",
                         reply_to_message_id=message_id
                     )
                 except Exception:
@@ -1144,14 +1196,12 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         if user_data.get('is_blocked'):
             status_text += "🚫 Заблокирован для тейков\n"
 
-        # Баланс текущего бота
         main_balance = db.get_balance(callback.from_user.id, bot_id)
         main_bal_str = "∞" if main_balance == float('inf') else f"{main_balance:.0f}"
 
         text = f"{status_text}💳 Балансы:\n\n"
         text += f"▸ {cfg.currency_name} {cfg.currency_emoji}: {main_bal_str} (текущий)\n"
 
-        # Балансы в других ботах
         for other_bot_id, other_cfg in config.bots.items():
             if other_bot_id != bot_id:
                 other_balance = db.get_balance(callback.from_user.id, other_bot_id)
@@ -1159,7 +1209,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     other_str = "∞" if other_balance == float('inf') else f"{other_balance:.0f}"
                     text += f"▸ {other_cfg.currency_name} {other_cfg.currency_emoji}: {other_str}\n"
 
-        # Статус тейков
         can_take, cooldown_msg = can_send_take(callback.from_user.id, bot_id)
         text += f"\n📝 Тейки: {'✅ доступно' if can_take else f'⏳ {cooldown_msg}'}"
 
@@ -1199,7 +1248,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             return
         await callback.message.edit_text(
             "Введите username или ID получателя:",
-            reply_markup=build_cancel_kb()
+            reply_markup=build_cancel_keyboard()
         )
         await state.set_state(TransferStates.WaitingReceiver)
         await callback.answer()
@@ -1208,14 +1257,14 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     async def transfer_receiver(message: types.Message, state: FSMContext):
         receiver_id = db.find_user_by_input(message.text)
         if not receiver_id:
-            await message.answer("Пользователь не найден. Попробуйте ещё раз:", reply_markup=build_cancel_kb())
+            await message.answer("Пользователь не найден. Попробуйте ещё раз:", reply_markup=build_cancel_keyboard())
             return
         if receiver_id == message.from_user.id:
-            await message.answer("Нельзя перевести самому себе.", reply_markup=build_cancel_kb())
+            await message.answer("Нельзя перевести самому себе.", reply_markup=build_cancel_keyboard())
             return
         receiver_data = db.get_bot_data(receiver_id, bot_id)
         if receiver_data.get('is_frozen'):
-            await message.answer("❄️ Счёт получателя заморожен.", reply_markup=build_cancel_kb())
+            await message.answer("❄️ Счёт получателя заморожен.", reply_markup=build_cancel_keyboard())
             return
 
         await state.update_data(receiver_id=receiver_id)
@@ -1223,7 +1272,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             "Введите сумму перевода.\n"
             "Можете добавить сообщение на новой строке:\n\n"
             "Пример:\n100\nСпасибо!",
-            reply_markup=build_cancel_kb()
+            reply_markup=build_cancel_keyboard()
         )
         await state.set_state(TransferStates.WaitingAmountAndMessage)
 
@@ -1235,7 +1284,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             if amount <= 0:
                 raise ValueError
         except ValueError:
-            await message.answer("Введите корректную сумму.", reply_markup=build_cancel_kb())
+            await message.answer("Введите корректную сумму.", reply_markup=build_cancel_keyboard())
             return
 
         transfer_msg = lines[1].strip() if len(lines) > 1 else ""
@@ -1287,7 +1336,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             return
         await callback.message.edit_text(
             "Выберите валюту, ИЗ которой конвертировать:",
-            reply_markup=build_currency_kb()
+            reply_markup=build_currency_keyboard()
         )
         await state.set_state(ConvertStates.WaitingSource)
         await callback.answer()
@@ -1298,7 +1347,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         await state.update_data(source_bot=source_bot)
         await callback.message.edit_text(
             "Выберите валюту, В которую конвертировать:",
-            reply_markup=build_currency_kb(source_bot)
+            reply_markup=build_currency_keyboard(source_bot)
         )
         await state.set_state(ConvertStates.WaitingTarget)
         await callback.answer()
@@ -1318,7 +1367,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             f"Курс: 1 {source_cfg.currency_emoji} = {source_rate/target_rate:.2f} {target_cfg.currency_emoji}\n"
             f"Ваш баланс: {balance:.0f} {source_cfg.currency_emoji}\n\n"
             f"Введите сумму для конвертации:",
-            reply_markup=build_cancel_kb()
+            reply_markup=build_cancel_keyboard()
         )
         await state.set_state(ConvertStates.WaitingAmount)
         await callback.answer()
@@ -1330,7 +1379,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             if amount <= 0:
                 raise ValueError
         except ValueError:
-            await message.answer("Введите корректную сумму.", reply_markup=build_cancel_kb())
+            await message.answer("Введите корректную сумму.", reply_markup=build_cancel_keyboard())
             return
 
         data = await state.get_data()
@@ -1372,7 +1421,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             return
         await callback.message.edit_text(
             f"Вопрос 1:\n{BUILT_IN_QUIZ[1]['question']}",
-            reply_markup=build_quiz_kb(1)
+            reply_markup=build_quiz_keyboard(1)
         )
         await state.set_state(QuizStates.Question1)
         await callback.answer()
@@ -1385,7 +1434,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await callback.message.edit_text(
                 f"✅ Правильно! +{cfg.quiz_reward} {cfg.currency_emoji}\n\n"
                 f"Вопрос 2:\n{BUILT_IN_QUIZ[2]['question']}",
-                reply_markup=build_quiz_kb(2)
+                reply_markup=build_quiz_keyboard(2)
             )
             await state.set_state(QuizStates.Question2)
         else:
@@ -1402,7 +1451,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await callback.message.edit_text(
                 f"✅ Правильно! +{cfg.quiz_reward} {cfg.currency_emoji}\n\n"
                 f"Вопрос 3:\n{BUILT_IN_QUIZ[3]['question']}",
-                reply_markup=build_quiz_kb(3)
+                reply_markup=build_quiz_keyboard(3)
             )
             await state.set_state(QuizStates.Question3)
         else:
@@ -1428,7 +1477,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         await state.clear()
         await callback.answer()
 
-    # =================== ТЕЙКИ (пауза, ручной контроль, анонимность) ===================
+    # =================== ТЕЙКИ ===================
 
     if bot_config and "takes" in bot_config.modules:
 
@@ -1439,12 +1488,10 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             cfg = config.bots.get(bid)
             user_data = db.get_bot_data(uid, bid)
 
-            # Проверка блокировки
             if user_data.get('is_blocked'):
                 await message.answer("🚫 Вы заблокированы для отправки тейков.")
                 return False
 
-            # Проверка кулдауна
             can_take, cooldown_msg = can_send_take(uid, bid)
             if not can_take:
                 await message.answer(f"⏳ {cooldown_msg}")
@@ -1452,7 +1499,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
             text = message.text or message.caption or ""
 
-            # Тейки на паузе — сохраняем в очередь
+            # Тейки на паузе
             if cfg.takes_paused:
                 take_data = {
                     'user_id': uid, 'bot_id': bid, 'text': text,
@@ -1474,7 +1521,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 )
                 return True
 
-            # Определяем нужна ли модерация
+            # Модерация
             needs_moderation = cfg.manual_control
             moderation_reason = "Ручной контроль"
 
@@ -1504,7 +1551,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 }
                 config.save()
 
-                # Отправляем модераторам АНОНИМНО (без username)
                 all_users = db.get_all_users_for_bot(bid)
                 for user in all_users:
                     mod_uid = user['user_id']
@@ -1513,9 +1559,8 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                             is_blocked = db.get_bot_data(uid, bid).get('is_blocked', 0)
                             await bot.send_message(
                                 mod_uid,
-                                f"⚠️ Тейк на модерации\n"
-                                f"Причина: {moderation_reason}\n\n{text}",
-                                reply_markup=build_take_mod_kb(take_id, uid, bool(is_blocked))
+                                f"⚠️ Тейк на модерации\nПричина: {moderation_reason}\n\n{text}",
+                                reply_markup=build_take_moderation_keyboard(take_id, uid, bool(is_blocked))
                             )
                             await message.copy_to(mod_uid)
                         except Exception as e:
@@ -1524,7 +1569,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 await message.answer("📝 Тейк отправлен на модерацию.", reply_markup=build_main_menu(bid))
                 return True
             else:
-                # Отправляем напрямую в канал
                 sent = await forward_take_to_channel(message, bid, bot)
                 if sent:
                     db.add_take_timestamp(uid, bid)
@@ -1551,7 +1595,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await callback.message.edit_text(
                 f"📝 Отправьте тейк с хештегом #тейк{pause_text}\n"
                 f"⏱ Кулдаун: {cfg.take_cooldown_minutes} мин",
-                reply_markup=build_cancel_kb()
+                reply_markup=build_cancel_keyboard()
             )
             await state.set_state(TakeStates.WaitingTake)
             await callback.answer()
@@ -1560,7 +1604,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         async def process_take_from_button(message: types.Message, state: FSMContext):
             text = message.text or message.caption or ""
             if "#тейк" not in text.lower():
-                await message.answer("⚠️ Добавьте #тейк в сообщение!", reply_markup=build_cancel_kb())
+                await message.answer("⚠️ Добавьте #тейк в сообщение!", reply_markup=build_cancel_keyboard())
                 return
             await process_take_message(message, bot_id, bot_instance)
             await state.clear()
@@ -1675,7 +1719,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await callback.message.edit_text("🛒 Магазин:", reply_markup=build_shop_menu(bot_id))
             await callback.answer()
 
-        # Автопересылка объявлений с #продажа / #обмен
+        # Автопересылка объявлений
         @router.message(
             F.text.contains("#продажа") | F.caption.contains("#продажа") |
             F.text.contains("#обмен") | F.caption.contains("#обмен")
@@ -1687,14 +1731,16 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             cfg = config.bots.get(bot_id)
             try:
                 if message.photo:
-                    await bot_instance.send_photo(cfg.shop_channel, photo=message.photo[-1].file_id, caption=message.caption)
+                    await bot_instance.send_photo(
+                        cfg.shop_channel, photo=message.photo[-1].file_id, caption=message.caption
+                    )
                 else:
                     await bot_instance.send_message(cfg.shop_channel, message.text)
                 await message.answer("✅ Объявление отправлено!")
             except Exception as e:
                 logger.error(f"Ошибка автопересылки: {e}")
 
-        # Пиар (с ограничением 1 в 12ч и 3 дня с активации)
+        # Пиар
         @router.callback_query(F.data.startswith("promo_"))
         async def callback_promo(callback: types.CallbackQuery, state: FSMContext):
             if callback.data == "promo_pay":
@@ -1753,7 +1799,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                         hours, is_pinned, deletion_id
                     ))
 
-                    # Записываем время последнего пиара
                     db.set_bot_data(callback.from_user.id, bot_id, last_promo_at=datetime.now().isoformat())
 
                     pin_text = "📌 Закреплён и " if is_pinned else ""
@@ -1773,7 +1818,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 await callback.answer()
                 return
 
-            # Начало оформления пиара — проверяем ограничения
+            # Начало оформления пиара
             is_pinned = callback.data == "promo_pinned"
             can_promo, promo_msg = can_use_promo(callback.from_user.id, bot_id)
             if not can_promo:
@@ -1788,7 +1833,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 f"{'📌 Пиар с закрепом' if is_pinned else '📢 Пиар'}\n"
                 f"Стоимость: {price_per_hour} {cfg.currency_emoji}/час\n\n"
                 f"Сколько часов?",
-                reply_markup=build_cancel_kb()
+                reply_markup=build_cancel_keyboard()
             )
             await state.set_state(PromoStates.WaitingHours)
             await callback.answer()
@@ -1800,14 +1845,14 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 if hours <= 0:
                     raise ValueError
             except ValueError:
-                await message.answer("Введите положительное число.", reply_markup=build_cancel_kb())
+                await message.answer("Введите положительное число.", reply_markup=build_cancel_keyboard())
                 return
             await state.update_data(hours=hours)
             await message.answer(
                 "Отправьте ваш рекламный пост:\n\n"
                 "💡 Ссылки и форматирование сохранятся.\n"
                 "📎 Пересланные сообщения сохранят 'Переслано из'.",
-                reply_markup=build_cancel_kb()
+                reply_markup=build_cancel_keyboard()
             )
             await state.set_state(PromoStates.WaitingPost)
 
@@ -1838,37 +1883,37 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 f"💰 К оплате: {total_cost} {cfg.currency_emoji}\n"
                 f"💳 Ваш баланс: {balance_str} {cfg.currency_emoji}"
                 f"{forward_note}",
-                reply_markup=build_promo_confirm_kb()
+                reply_markup=build_promo_confirm_keyboard()
             )
             await state.set_state(PromoStates.WaitingConfirmation)
 
         # Покупка товара
         @router.callback_query(F.data == "buy_product")
         async def callback_buy_product(callback: types.CallbackQuery, state: FSMContext):
-            await callback.message.edit_text("🛍 Отправьте фото товара:", reply_markup=build_cancel_kb())
+            await callback.message.edit_text("🛍 Отправьте фото товара:", reply_markup=build_cancel_keyboard())
             await state.set_state(PurchaseStates.WaitingImage)
             await callback.answer()
 
         @router.message(PurchaseStates.WaitingImage)
         async def buy_image(message: types.Message, state: FSMContext):
             if not message.photo:
-                await message.answer("Нужно отправить фото.", reply_markup=build_cancel_kb())
+                await message.answer("Нужно отправить фото.", reply_markup=build_cancel_keyboard())
                 return
             await state.update_data(photo_id=message.photo[-1].file_id)
-            await message.answer("Введите username или ID продавца:", reply_markup=build_cancel_kb())
+            await message.answer("Введите username или ID продавца:", reply_markup=build_cancel_keyboard())
             await state.set_state(PurchaseStates.WaitingSeller)
 
         @router.message(PurchaseStates.WaitingSeller)
         async def buy_seller(message: types.Message, state: FSMContext):
             seller_id = db.find_user_by_input(message.text)
             if not seller_id:
-                await message.answer("Продавец не найден.", reply_markup=build_cancel_kb())
+                await message.answer("Продавец не найден.", reply_markup=build_cancel_keyboard())
                 return
             if seller_id == message.from_user.id:
-                await message.answer("Нельзя купить у себя.", reply_markup=build_cancel_kb())
+                await message.answer("Нельзя купить у себя.", reply_markup=build_cancel_keyboard())
                 return
             await state.update_data(seller_id=seller_id)
-            await message.answer("Введите сумму оплаты:", reply_markup=build_cancel_kb())
+            await message.answer("Введите сумму оплаты:", reply_markup=build_cancel_keyboard())
             await state.set_state(PurchaseStates.WaitingAmount)
 
         @router.message(PurchaseStates.WaitingAmount)
@@ -1878,7 +1923,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 if amount <= 0:
                     raise ValueError
             except ValueError:
-                await message.answer("Введите корректную сумму.", reply_markup=build_cancel_kb())
+                await message.answer("Введите корректную сумму.", reply_markup=build_cancel_keyboard())
                 return
 
             data = await state.get_data()
@@ -1927,7 +1972,10 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             if success:
                 await callback.message.edit_caption(caption=f"✅ Продано! +{purchase['amount']} {cfg.currency_emoji}")
                 try:
-                    await bot_instance.send_message(purchase['buyer_id'], f"✅ Покупка подтверждена! -{purchase['amount']} {cfg.currency_emoji}")
+                    await bot_instance.send_message(
+                        purchase['buyer_id'],
+                        f"✅ Покупка подтверждена! -{purchase['amount']} {cfg.currency_emoji}"
+                    )
                 except Exception:
                     pass
             else:
@@ -1977,7 +2025,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         if not check_owner(callback.from_user.id, bot_id):
             await callback.answer("Нет доступа", show_alert=True)
             return
-        await callback.message.edit_text("Введите username пользователя для списания:", reply_markup=build_cancel_kb())
+        await callback.message.edit_text("Введите username пользователя для списания:", reply_markup=build_cancel_keyboard())
         await state.set_state(AdminStates.WaitingUsernameForDeduct)
         await callback.answer()
 
@@ -1985,12 +2033,15 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     async def admin_deduct_username(message: types.Message, state: FSMContext):
         uid = db.find_user_by_input(message.text)
         if not uid:
-            await message.answer("Пользователь не найден.", reply_markup=build_cancel_kb())
+            await message.answer("Пользователь не найден.", reply_markup=build_cancel_keyboard())
             return
         await state.update_data(target_uid=uid)
         cfg = config.bots.get(bot_id)
         balance = db.get_balance(uid, bot_id)
-        await message.answer(f"Баланс: {balance:.0f} {cfg.currency_emoji}\nСколько списать?", reply_markup=build_cancel_kb())
+        await message.answer(
+            f"Баланс: {balance:.0f} {cfg.currency_emoji}\nСколько списать?",
+            reply_markup=build_cancel_keyboard()
+        )
         await state.set_state(AdminStates.WaitingAmountForDeduct)
 
     @router.message(AdminStates.WaitingAmountForDeduct)
@@ -1998,12 +2049,15 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         try:
             amount = float(message.text)
         except ValueError:
-            await message.answer("Введите число.", reply_markup=build_cancel_kb())
+            await message.answer("Введите число.", reply_markup=build_cancel_keyboard())
             return
         data = await state.get_data()
         cfg = config.bots.get(bot_id)
         if db.deduct_balance(data['target_uid'], bot_id, amount):
-            await message.answer(f"✅ Списано {amount} {cfg.currency_emoji}", reply_markup=build_admin_menu(message.from_user.id, bot_id))
+            await message.answer(
+                f"✅ Списано {amount} {cfg.currency_emoji}",
+                reply_markup=build_admin_menu(message.from_user.id, bot_id)
+            )
         else:
             await message.answer("❌ Ошибка списания.", reply_markup=build_admin_menu(message.from_user.id, bot_id))
         await state.clear()
@@ -2013,7 +2067,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         if not check_owner(callback.from_user.id, bot_id):
             await callback.answer("Нет доступа", show_alert=True)
             return
-        await callback.message.edit_text("Введите username для заморозки:", reply_markup=build_cancel_kb())
+        await callback.message.edit_text("Введите username для заморозки:", reply_markup=build_cancel_keyboard())
         await state.set_state(AdminStates.WaitingUsernameForFreeze)
         await callback.answer()
 
@@ -2024,7 +2078,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             db.set_bot_data(uid, bot_id, is_frozen=1)
             await message.answer("❄️ Счёт заморожен.", reply_markup=build_admin_menu(message.from_user.id, bot_id))
         else:
-            await message.answer("Пользователь не найден.", reply_markup=build_cancel_kb())
+            await message.answer("Пользователь не найден.", reply_markup=build_cancel_keyboard())
         await state.clear()
 
     @router.callback_query(F.data == "adm_unfreeze")
@@ -2032,7 +2086,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         if not check_owner(callback.from_user.id, bot_id):
             await callback.answer("Нет доступа", show_alert=True)
             return
-        await callback.message.edit_text("Введите username для разморозки:", reply_markup=build_cancel_kb())
+        await callback.message.edit_text("Введите username для разморозки:", reply_markup=build_cancel_keyboard())
         await state.set_state(AdminStates.WaitingUsernameForUnfreeze)
         await callback.answer()
 
@@ -2043,7 +2097,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             db.set_bot_data(uid, bot_id, is_frozen=0)
             await message.answer("🔥 Счёт разморожен.", reply_markup=build_admin_menu(message.from_user.id, bot_id))
         else:
-            await message.answer("Пользователь не найден.", reply_markup=build_cancel_kb())
+            await message.answer("Пользователь не найден.", reply_markup=build_cancel_keyboard())
         await state.clear()
 
     # Переключение тейков (пауза)
@@ -2055,27 +2109,31 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
         cfg = config.bots.get(bot_id)
         if cfg.takes_paused:
-            # Включаем тейки — отправляем накопленные
             cfg.takes_paused = False
             paused_list = config.paused_takes.get(bot_id, [])
             sent_count = 0
             for take in paused_list:
                 text = take.get('text', '')
                 if contains_marker_words(text, bot_id) or cfg.manual_control:
-                    # На модерацию
                     take_id = str(uuid.uuid4())[:8]
                     config.pending_takes[take_id] = take
                 else:
-                    # Отправляем в канал
                     try:
                         censored, has_prof = censor_profanity(text, bot_id)
-                        send_kwargs = {"caption": censored if has_prof else text, "parse_mode": "HTML" if has_prof else None}
+                        send_kwargs = {
+                            "caption": censored if has_prof else text,
+                            "parse_mode": "HTML" if has_prof else None
+                        }
                         if take.get('photo'):
                             await bot_instance.send_photo(cfg.takes_channel, photo=take['photo'], **send_kwargs)
                         elif take.get('video'):
                             await bot_instance.send_video(cfg.takes_channel, video=take['video'], **send_kwargs)
                         else:
-                            await bot_instance.send_message(cfg.takes_channel, censored if has_prof else text, parse_mode="HTML" if has_prof else None)
+                            await bot_instance.send_message(
+                                cfg.takes_channel,
+                                censored if has_prof else text,
+                                parse_mode="HTML" if has_prof else None
+                            )
                         sent_count += 1
                     except Exception as e:
                         logger.error(f"Ошибка отправки из очереди: {e}")
@@ -2114,7 +2172,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         await callback.message.edit_text(
             "🎯 Провести викторину в канале\n\n"
             "Отправьте вопрос (текст, фото или видео с подписью):",
-            reply_markup=build_cancel_kb()
+            reply_markup=build_cancel_keyboard()
         )
         await state.set_state(AdminStates.WaitingQuizQuestion)
         await callback.answer()
@@ -2127,7 +2185,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             'video': message.video.file_id if message.video else None,
         }
         await state.update_data(quiz_data=quiz_data)
-        await message.answer("Укажите награду (число валюты):", reply_markup=build_cancel_kb())
+        await message.answer("Укажите награду (число валюты):", reply_markup=build_cancel_keyboard())
         await state.set_state(AdminStates.WaitingQuizReward)
 
     @router.message(AdminStates.WaitingQuizReward)
@@ -2137,10 +2195,10 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             if reward <= 0:
                 raise ValueError
         except ValueError:
-            await message.answer("Введите положительное число.", reply_markup=build_cancel_kb())
+            await message.answer("Введите положительное число.", reply_markup=build_cancel_keyboard())
             return
         await state.update_data(quiz_reward=reward)
-        await message.answer("Введите правильный ответ:", reply_markup=build_cancel_kb())
+        await message.answer("Введите правильный ответ:", reply_markup=build_cancel_keyboard())
         await state.set_state(AdminStates.WaitingQuizAnswer)
 
     @router.message(AdminStates.WaitingQuizAnswer)
@@ -2151,7 +2209,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         correct_answer = message.text.strip().lower()
 
         try:
-            # Публикуем вопрос в канал
             if quiz_data.get('photo'):
                 sent = await bot_instance.send_photo(
                     cfg.takes_channel, photo=quiz_data['photo'], caption=quiz_data['text']
@@ -2163,7 +2220,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             else:
                 sent = await bot_instance.send_message(cfg.takes_channel, quiz_data['text'])
 
-            # Сохраняем активную викторину
             quiz_id = str(sent.message_id)
             config.active_quizzes[quiz_id] = {
                 'bot_id': bot_id,
@@ -2201,7 +2257,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
     @router.callback_query(F.data == "censor_add")
     async def censor_add_start(callback: types.CallbackQuery, state: FSMContext):
-        await callback.message.edit_text("Введите слово/корень для цензуры:", reply_markup=build_cancel_kb())
+        await callback.message.edit_text("Введите слово/корень для цензуры:", reply_markup=build_cancel_keyboard())
         await state.set_state(AdminStates.WaitingCensorWord)
         await callback.answer()
 
@@ -2223,7 +2279,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             return
         await callback.message.edit_text(
             f"Дополнительные слова: {', '.join(cfg.censored_words)}\n\nВведите слово для удаления:",
-            reply_markup=build_cancel_kb()
+            reply_markup=build_cancel_keyboard()
         )
         await state.set_state(AdminStates.WaitingRemoveCensorWord)
         await callback.answer()
@@ -2242,7 +2298,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
     @router.callback_query(F.data == "marker_add")
     async def marker_add_start(callback: types.CallbackQuery, state: FSMContext):
-        await callback.message.edit_text("Введите маркер (тейки с ним → модерация):", reply_markup=build_cancel_kb())
+        await callback.message.edit_text("Введите маркер (тейки с ним → модерация):", reply_markup=build_cancel_keyboard())
         await state.set_state(AdminStates.WaitingMarkerWord)
         await callback.answer()
 
@@ -2264,7 +2320,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             return
         await callback.message.edit_text(
             f"Маркеры: {', '.join(cfg.marker_words)}\n\nВведите маркер для удаления:",
-            reply_markup=build_cancel_kb()
+            reply_markup=build_cancel_keyboard()
         )
         await state.set_state(AdminStates.WaitingRemoveMarkerWord)
         await callback.answer()
@@ -2305,7 +2361,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
     @router.callback_query(F.data == "mod_assign")
     async def mod_assign_start(callback: types.CallbackQuery, state: FSMContext):
-        await callback.message.edit_text("Введите username модератора:", reply_markup=build_cancel_kb())
+        await callback.message.edit_text("Введите username модератора:", reply_markup=build_cancel_keyboard())
         await state.set_state(AdminStates.WaitingModeratorUsername)
         await callback.answer()
 
@@ -2316,12 +2372,12 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             db.set_bot_data(uid, bot_id, is_moderator=1)
             await message.answer("✅ Назначен модератором.", reply_markup=build_mods_menu())
         else:
-            await message.answer("Пользователь не найден.", reply_markup=build_cancel_kb())
+            await message.answer("Пользователь не найден.", reply_markup=build_cancel_keyboard())
         await state.clear()
 
     @router.callback_query(F.data == "mod_remove")
     async def mod_remove_start(callback: types.CallbackQuery, state: FSMContext):
-        await callback.message.edit_text("Введите username для снятия:", reply_markup=build_cancel_kb())
+        await callback.message.edit_text("Введите username для снятия:", reply_markup=build_cancel_keyboard())
         await state.set_state(AdminStates.WaitingRemoveModeratorUsername)
         await callback.answer()
 
@@ -2332,7 +2388,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             db.set_bot_data(uid, bot_id, is_moderator=0)
             await message.answer("✅ Снят с модераторов.", reply_markup=build_mods_menu())
         else:
-            await message.answer("Пользователь не найден.", reply_markup=build_cancel_kb())
+            await message.answer("Пользователь не найден.", reply_markup=build_cancel_keyboard())
         await state.clear()
 
     @router.callback_query(F.data == "mod_list")
@@ -2342,7 +2398,9 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         for user in users_list:
             user_bot_data = db.get_bot_data(user['user_id'], bot_id)
             if user_bot_data.get('is_moderator'):
-                moderators.append(f"@{user['username']}")
+                user_info = db.get_user(user['user_id'])
+                if user_info:
+                    moderators.append(f"@{user_info['username']}")
         text = ", ".join(moderators) if moderators else "(нет модераторов)"
         await callback.message.edit_text(f"👮 Модераторы: {text}", reply_markup=build_mods_menu())
         await callback.answer()
@@ -2380,6 +2438,142 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         )
         await callback.answer()
 
+    # =================== ОТСЛЕЖИВАНИЕ КОММЕНТАРИЕВ В КАНАЛЕ ===================
+
+    @router.channel_post()
+    async def handle_channel_post(message: types.Message):
+        """Отслеживание новых постов в канале — создание аукционов по #аукцион."""
+        if not message.text:
+            return
+
+        cfg = config.bots.get(bot_id)
+        if not cfg:
+            return
+
+        if "#аукцион" in message.text.lower():
+            auction_id = str(message.message_id)
+            config.active_auctions[auction_id] = {
+                'bot_id': bot_id,
+                'channel': message.chat.id,
+                'message_id': message.message_id,
+                'current_bidder': None,
+                'current_bid': 0,
+                'last_bid_time': datetime.now().isoformat(),
+                'started': True
+            }
+            config.save()
+            logger.info(f"Аукцион создан: {auction_id} в канале {message.chat.id}")
+
+            task = asyncio.create_task(run_auction_timer(bot_instance, bot_id, auction_id))
+            config.auction_tasks[auction_id] = task
+
+    @router.message(F.reply_to_message)
+    async def handle_comment_reply(message: types.Message):
+        """Обработка комментариев под постами канала — викторины и аукционы."""
+        if not message.text:
+            return
+        if not message.reply_to_message:
+            return
+
+        cfg = config.bots.get(bot_id)
+        if not cfg:
+            return
+
+        # Получаем ID оригинального поста в канале
+        original_msg_id = None
+        if message.reply_to_message.forward_from_message_id:
+            original_msg_id = str(message.reply_to_message.forward_from_message_id)
+        elif message.reply_to_message.message_id:
+            original_msg_id = str(message.reply_to_message.message_id)
+
+        if not original_msg_id:
+            return
+
+        user_id = message.from_user.id
+        user_name = message.from_user.full_name
+        comment_text = message.text.strip()
+        comment_text_lower = comment_text.lower()
+
+        # ===== ПРОВЕРКА ВИКТОРИНЫ =====
+        quiz = config.active_quizzes.get(original_msg_id)
+        if quiz and not quiz.get('solved') and quiz.get('bot_id') == bot_id:
+            correct_answer = quiz.get('answer', '').lower()
+
+            if comment_text_lower == correct_answer:
+                reward = quiz.get('reward', 0)
+                quiz['solved'] = True
+                config.save()
+
+                register_user(message.from_user, bot_id)
+                db.add_balance(user_id, bot_id, reward)
+
+                try:
+                    await message.reply(
+                        f"✅ Правильный ответ, {user_name}!\n"
+                        f"+{reward} {cfg.currency_emoji}"
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка ответа на викторину: {e}")
+
+                logger.info(f"Викторина {original_msg_id} решена пользователем {user_id}, награда: {reward}")
+
+                if original_msg_id in config.active_quizzes:
+                    del config.active_quizzes[original_msg_id]
+                    config.save()
+
+        # ===== ПРОВЕРКА АУКЦИОНА =====
+        auction = config.active_auctions.get(original_msg_id)
+        if auction and auction.get('bot_id') == bot_id:
+            bet_match = BET_PATTERN.search(message.text)
+
+            if bet_match:
+                bet_amount = int(bet_match.group(1))
+
+                register_user(message.from_user, bot_id)
+                user_balance = db.get_balance(user_id, bot_id)
+
+                if user_balance != float('inf') and user_balance < bet_amount:
+                    try:
+                        await message.reply(
+                            f"{user_name}, у вас недостаточно средств.\n"
+                            f"Ваш баланс: {user_balance:.0f} {cfg.currency_emoji}"
+                        )
+                    except Exception as e:
+                        logger.error(f"Ошибка ответа аукциона: {e}")
+                    return
+
+                current_bid = auction.get('current_bid', 0)
+                if bet_amount <= current_bid:
+                    try:
+                        await message.reply(
+                            f"{user_name}, ставка должна быть больше текущей: "
+                            f"{current_bid} {cfg.currency_emoji}"
+                        )
+                    except Exception as e:
+                        logger.error(f"Ошибка ответа аукциона: {e}")
+                    return
+
+                auction['current_bidder'] = user_id
+                auction['current_bid'] = bet_amount
+                auction['last_bid_time'] = datetime.now().isoformat()
+                config.save()
+
+                try:
+                    await message.reply(
+                        f"✅ {user_name} ставит {bet_amount} {cfg.currency_emoji}!"
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка подтверждения ставки: {e}")
+
+                logger.info(f"Аукцион {original_msg_id}: ставка {bet_amount} от {user_id}")
+
+                old_task = config.auction_tasks.get(original_msg_id)
+                if old_task is None or old_task.done():
+                    task = asyncio.create_task(
+                        run_auction_timer(bot_instance, bot_id, original_msg_id)
+                    )
+                    config.auction_tasks[original_msg_id] = task
+
     dp.include_router(router)
 
 
@@ -2391,7 +2585,7 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
 
     @router.callback_query(F.data == "connect_bot")
     async def connect_start(callback: types.CallbackQuery, state: FSMContext):
-        await callback.message.edit_text("🤖 Подключение бота\n\nОтправьте ссылку на ваш канал:", reply_markup=build_cancel_kb())
+        await callback.message.edit_text("🤖 Подключение бота\n\nОтправьте ссылку на ваш канал:", reply_markup=build_cancel_keyboard())
         await state.set_state(ConnectBotStates.WaitingChannelUrl)
         await callback.answer()
 
@@ -2534,7 +2728,7 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
         if req:
             req.currency_emoji = message.text.strip()
             config.save()
-        await message.answer("Выберите функции бота:", reply_markup=build_modules_kb())
+        await message.answer("Выберите функции бота:", reply_markup=build_modules_keyboard())
         await state.set_state(ConnectBotStates.WaitingModules)
 
     @router.callback_query(ConnectBotStates.WaitingModules, F.data.startswith("module_"))
@@ -2606,7 +2800,6 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
             )
             config.bots[new_bot_id] = new_config
 
-            # Регистрируем владельца в БД
             register_user(message.from_user, new_bot_id)
             db.set_balance(req.user_id, new_bot_id, float('inf'))
             db.set_bot_data(req.user_id, new_bot_id, is_owner=1, is_admin=1, activated_at=datetime.now().isoformat())
@@ -2647,7 +2840,9 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
 
 async def main():
     """Точка входа: подключение БД, загрузка конфигурации, запуск ботов."""
+    logger.info("Подключение к базе данных...")
     db.connect()
+    logger.info("Загрузка конфигурации...")
     config.load()
 
     # Главный бот
@@ -2659,10 +2854,10 @@ async def main():
     config.active_dispatchers["main"] = main_dp
 
     # Запуск подключённых ботов
-    for bot_id, bot_config in config.bots.items():
+    for bot_id, bot_cfg in config.bots.items():
         if bot_id != "main":
             try:
-                connected_bot = Bot(token=bot_config.token)
+                connected_bot = Bot(token=bot_cfg.token)
                 connected_dp = Dispatcher(storage=MemoryStorage())
                 create_bot_handlers(bot_id, connected_bot, connected_dp)
                 config.active_bots[bot_id] = connected_bot
@@ -2687,7 +2882,6 @@ async def main():
                 continue
 
             if delete_at <= now:
-                # Время прошло — удаляем сразу
                 logger.info(f"Просроченная задача {deletion_id}, удаляем сейчас")
                 try:
                     if info.get('is_pinned'):
@@ -2697,7 +2891,6 @@ async def main():
                     logger.error(f"Ошибка удаления просроченного: {e}")
                 to_remove.append(deletion_id)
             else:
-                # Осталось время — планируем удаление
                 remaining_hours = (delete_at - now).total_seconds() / 3600
                 logger.info(f"Восстановлена задача {deletion_id}, осталось {remaining_hours:.1f}ч")
                 asyncio.create_task(delayed_delete_message(
@@ -2720,5 +2913,11 @@ async def main():
 
 
 if __name__ == "__main__":
-    print("🚀 Запуск бота...")
-    asyncio.run(main())
+    print("🚀 Запуск бота...", flush=True)
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        print(f"❌ ОШИБКА: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
