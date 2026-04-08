@@ -223,7 +223,6 @@ class Database:
             'INSERT INTO take_timestamps (user_id, bot_id, timestamp) VALUES (?, ?, ?)',
             (user_id, bot_id, datetime.now().isoformat())
         )
-        # Оставляем только последние 20 записей
         cursor.execute('''DELETE FROM take_timestamps WHERE id NOT IN (
             SELECT id FROM take_timestamps WHERE user_id = ? AND bot_id = ? ORDER BY id DESC LIMIT 20
         ) AND user_id = ? AND bot_id = ?''', (user_id, bot_id, user_id, bot_id))
@@ -355,7 +354,6 @@ class ConfigStorage:
         except Exception as e:
             logger.error(f"Ошибка загрузки конфигурации: {e}")
 
-        # Создаём главного бота если нет
         if "main" not in self.bots:
             self.bots["main"] = BotConfig(
                 bot_id="main",
@@ -494,17 +492,17 @@ BASE_PROFANITY_PATTERNS = [
 
 
 def build_profanity_regex(bot_id: str) -> re.Pattern:
-    """Строит регулярное выражение для цензуры с базовыми корнями + пользовательские слова."""
-    bot_config = config.bots.get(bot_id)
+    """Строит регулярное выражение для цензуры."""
+    bot_cfg = config.bots.get(bot_id)
     patterns = BASE_PROFANITY_PATTERNS.copy()
-    if bot_config and bot_config.censored_words:
-        for word in bot_config.censored_words:
+    if bot_cfg and bot_cfg.censored_words:
+        for word in bot_cfg.censored_words:
             patterns.append(re.escape(word) + r'\w*')
     return re.compile(r'\b(?:' + '|'.join(patterns) + r')\b', re.IGNORECASE | re.UNICODE)
 
 
 def censor_profanity(text: str, bot_id: str) -> Tuple[str, bool]:
-    """Заменяет мат на спойлеры. Возвращает (текст, найден_мат)."""
+    """Заменяет мат на спойлеры."""
     if not text:
         return text, False
     regex = build_profanity_regex(bot_id)
@@ -522,14 +520,14 @@ def censor_profanity(text: str, bot_id: str) -> Tuple[str, bool]:
 
 
 def contains_marker_words(text: str, bot_id: str) -> bool:
-    """Проверяет наличие маркерных слов для модерации."""
+    """Проверяет наличие маркерных слов."""
     if not text:
         return False
-    bot_config = config.bots.get(bot_id)
-    if not bot_config or not bot_config.marker_words:
+    bot_cfg = config.bots.get(bot_id)
+    if not bot_cfg or not bot_cfg.marker_words:
         return False
     text_lower = text.lower()
-    return any(word.lower() in text_lower for word in bot_config.marker_words)
+    return any(word.lower() in text_lower for word in bot_cfg.marker_words)
 
 
 async def check_telegram_links(text: str, bot_instance: Bot) -> Tuple[bool, str]:
@@ -554,7 +552,7 @@ async def check_telegram_links(text: str, bot_instance: Bot) -> Tuple[bool, str]
 # ====================== УТИЛИТЫ ======================
 
 def register_user(user: User, bot_id: str):
-    """Регистрация пользователя в БД при первом обращении к боту."""
+    """Регистрация пользователя в БД."""
     uid = user.id
     username = user.username or f"user{uid}"
     name = user.full_name
@@ -597,13 +595,13 @@ def check_owner(uid: int, bot_id: str) -> bool:
 
 
 def check_moderator(uid: int, bot_id: str) -> bool:
-    """Является ли пользователь модератором (или админом/владельцем)."""
+    """Является ли пользователь модератором."""
     data = db.get_bot_data(uid, bot_id)
     return bool(data.get('is_moderator') or data.get('is_admin') or data.get('is_owner'))
 
 
 def can_send_take(uid: int, bot_id: str) -> Tuple[bool, str]:
-    """Проверка кулдауна тейков (1 в N минут)."""
+    """Проверка кулдауна тейков."""
     bot_cfg = config.bots.get(bot_id)
     if not bot_cfg:
         return False, "Ошибка конфигурации"
@@ -633,7 +631,6 @@ def can_use_promo(uid: int, bot_id: str) -> Tuple[bool, str]:
     """Проверка: 3 дня с активации + 12ч с последнего пиара."""
     data = db.get_bot_data(uid, bot_id)
 
-    # Проверка 3 дня с активации
     activated_at = data.get('activated_at', '')
     if activated_at:
         try:
@@ -645,7 +642,6 @@ def can_use_promo(uid: int, bot_id: str) -> Tuple[bool, str]:
         except Exception:
             pass
 
-    # Проверка 12 часов с последнего пиара
     last_promo = data.get('last_promo_at', '')
     if last_promo:
         try:
@@ -891,7 +887,7 @@ def build_mods_menu() -> InlineKeyboardMarkup:
 
 
 def build_currency_keyboard(exclude: str = None) -> InlineKeyboardMarkup:
-    """Выбор валюты для конвертации."""
+    """Выбор валюты."""
     builder = InlineKeyboardBuilder()
     for bot_id, bot_cfg in config.bots.items():
         if bot_id != exclude:
@@ -988,7 +984,7 @@ async def forward_take_to_channel(message: types.Message, bot_id: str, bot_insta
 
 async def delayed_delete_message(bot_instance: Bot, channel: str, message_id: int,
                                   hours: float, is_pinned: bool, deletion_id: str):
-    """Удаляет сообщение пиара через указанное время. Данные задачи удаляются после."""
+    """Удаляет сообщение пиара через указанное время."""
     try:
         await asyncio.sleep(hours * 3600)
 
@@ -1021,10 +1017,13 @@ async def delayed_delete_message(bot_instance: Bot, channel: str, message_id: in
 async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
     """
     Таймер аукциона:
-    - Ждёт 4 минуты после последней ставки
-    - Через 2 минуты начинает обратный отсчёт: 3... 2... 1...
-    - Если новая ставка — сброс таймера
-    - Без новых ставок — объявляет победителя
+    - Ждёт 2 минуты после последней ставки
+    - Обратный отсчёт 3, 2, 1 в КОММЕНТАРИЯХ (каждые 30 секунд)
+    - Если новая ставка во время ожидания или отсчёта — полный сброс
+    - Новая ставка не может быть меньше предыдущей (проверяется в handle_comment_reply)
+    - Проверяется баланс при ставке (проверяется в handle_comment_reply)
+    - Победитель объявляется ПОСТОМ В КАНАЛЕ: "Победитель: (имя)"
+    - Со счёта победителя списывается сумма ставки
     """
     bot_cfg = config.bots.get(bot_id)
     if not bot_cfg:
@@ -1032,6 +1031,7 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
 
     try:
         while True:
+            # Получаем актуальные данные аукциона
             auction = config.active_auctions.get(auction_id)
             if not auction:
                 return
@@ -1040,50 +1040,68 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
             message_id = auction['message_id']
             last_bid_time = datetime.fromisoformat(auction['last_bid_time'])
 
-            # Ждём 4 минуты с последней ставки
-            wait_until = last_bid_time + timedelta(minutes=4)
+            # === ЭТАП 1: Ждём 2 минуты с последней ставки ===
+            wait_until = last_bid_time + timedelta(minutes=2)
             now = datetime.now()
             if now < wait_until:
                 await asyncio.sleep((wait_until - now).total_seconds())
 
-            # Проверяем новую ставку
+            # Проверяем не было ли новой ставки пока ждали
             auction = config.active_auctions.get(auction_id)
             if not auction:
                 return
-            new_last = datetime.fromisoformat(auction['last_bid_time'])
-            if new_last > last_bid_time:
-                continue  # Новая ставка — начинаем заново
+            current_last = datetime.fromisoformat(auction['last_bid_time'])
+            if current_last > last_bid_time:
+                # Новая ставка — начинаем ожидание заново
+                logger.info(f"Аукцион {auction_id}: новая ставка во время ожидания, сброс")
+                continue
 
-            # Обратный отсчёт: 3, 2, 1
+            # === ЭТАП 2: Обратный отсчёт в комментариях ===
             countdown_broken = False
+            snapshot_time = current_last
+
             for count in [3, 2, 1]:
+                # Проверяем аукцион
                 auction = config.active_auctions.get(auction_id)
                 if not auction:
                     return
 
+                # Проверяем новую ставку ПЕРЕД публикацией цифры
+                check_time = datetime.fromisoformat(auction['last_bid_time'])
+                if check_time > snapshot_time:
+                    countdown_broken = True
+                    logger.info(f"Аукцион {auction_id}: ставка перебита перед цифрой {count}, сброс")
+                    break
+
+                # Пишем цифру в комментарии к посту
                 try:
                     await bot_instance.send_message(
-                        channel, str(count),
+                        chat_id=channel,
+                        text=str(count),
                         reply_to_message_id=message_id
                     )
-                except Exception:
-                    pass
+                    logger.info(f"Аукцион {auction_id}: отсчёт {count}")
+                except Exception as e:
+                    logger.error(f"Ошибка отсчёта аукциона: {e}")
 
+                # Ждём 30 секунд
                 await asyncio.sleep(30)
 
-                # Проверяем новую ставку во время отсчёта
+                # Проверяем новую ставку ПОСЛЕ публикации цифры
                 auction = config.active_auctions.get(auction_id)
                 if not auction:
                     return
-                check_last = datetime.fromisoformat(auction['last_bid_time'])
-                if check_last > new_last:
+                check_time_after = datetime.fromisoformat(auction['last_bid_time'])
+                if check_time_after > snapshot_time:
                     countdown_broken = True
-                    break  # Новая ставка — сброс
+                    logger.info(f"Аукцион {auction_id}: ставка перебита после цифры {count}, сброс")
+                    break
 
             if countdown_broken:
-                continue  # Начинаем заново
+                # Ставку перебили — начинаем всё заново
+                continue
 
-            # Объявляем победителя
+            # === ЭТАП 3: Объявление победителя ПОСТОМ В КАНАЛЕ ===
             auction = config.active_auctions.get(auction_id)
             if not auction:
                 return
@@ -1095,20 +1113,62 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
                 winner = db.get_user(winner_id)
                 winner_name = winner['name'] if winner else "Неизвестный"
 
+                # Проверяем баланс победителя перед списанием
+                winner_balance = db.get_balance(winner_id, bot_id)
+
+                if winner_balance != float('inf') and winner_balance < winner_amount:
+                    # У победителя не хватает средств
+                    try:
+                        # Сообщение в комментариях
+                        await bot_instance.send_message(
+                            chat_id=channel,
+                            text=(
+                                f"⚠️ У {winner_name} недостаточно средств для оплаты ставки "
+                                f"({winner_amount} {bot_cfg.currency_emoji}).\n"
+                                f"Аукцион отменён."
+                            ),
+                            reply_to_message_id=message_id
+                        )
+                    except Exception as e:
+                        logger.error(f"Ошибка сообщения о нехватке средств: {e}")
+                else:
+                    # Списываем со счёта победителя
+                    db.deduct_balance(winner_id, bot_id, winner_amount)
+
+                    # Объявление победителя ПОСТОМ В КАНАЛЕ
+                    try:
+                        await bot_instance.send_message(
+                            chat_id=bot_cfg.takes_channel,
+                            text=f"Победитель: {winner_name}"
+                        )
+                        logger.info(
+                            f"Аукцион {auction_id}: победитель {winner_name} (ID: {winner_id}), "
+                            f"списано {winner_amount} {bot_cfg.currency_emoji}"
+                        )
+                    except Exception as e:
+                        logger.error(f"Ошибка объявления победителя в канале: {e}")
+
+                    # Уведомляем победителя в личку
+                    try:
+                        await bot_instance.send_message(
+                            winner_id,
+                            f"🏆 Вы выиграли аукцион!\n"
+                            f"💰 Списано: {winner_amount} {bot_cfg.currency_emoji}"
+                        )
+                    except Exception:
+                        pass
+            else:
+                # Никто не сделал ставку — сообщение в комментариях
                 try:
                     await bot_instance.send_message(
-                        channel,
-                        f"🏆 {winner_name}, вы выиграли аукцион!\n"
-                        f"💰 Ставка: {winner_amount} {bot_cfg.currency_emoji}",
+                        chat_id=channel,
+                        text="⏰ Аукцион завершён. Ставок не было.",
                         reply_to_message_id=message_id
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.error(f"Ошибка завершения аукциона: {e}")
 
-                # Списываем со счёта победителя
-                db.deduct_balance(winner_id, bot_id, winner_amount)
-
-            # Удаляем аукцион
+            # Удаляем аукцион из активных
             if auction_id in config.active_auctions:
                 del config.active_auctions[auction_id]
                 config.save()
@@ -1183,7 +1243,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         await callback.message.edit_text("Выберите действие:", reply_markup=build_main_menu(bot_id))
         await callback.answer()
 
-    # =================== БАЛАНС (ВСЕ ВАЛЮТЫ) ===================
+    # =================== БАЛАНС ===================
 
     @router.callback_query(F.data == "balance")
     async def callback_balance(callback: types.CallbackQuery):
@@ -1313,7 +1373,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
         await state.clear()
 
-    # =================== КУРСЫ ВАЛЮТ ===================
+    # =================== КУРСЫ / КОНВЕРТАЦИЯ ===================
 
     @router.callback_query(F.data == "rates")
     async def callback_rates(callback: types.CallbackQuery):
@@ -1325,8 +1385,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             text += "\n🔒 Курсы зафиксированы"
         await callback.message.edit_text(text, reply_markup=build_main_menu(bot_id))
         await callback.answer()
-
-    # =================== КОНВЕРТАЦИЯ ===================
 
     @router.callback_query(F.data == "convert")
     async def callback_convert(callback: types.CallbackQuery, state: FSMContext):
@@ -1400,7 +1458,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
         await state.clear()
 
-    # =================== ЗАРАБОТОК / ВСТРОЕННАЯ ВИКТОРИНА ===================
+    # =================== ЗАРАБОТОК / ВИКТОРИНА ===================
 
     @router.callback_query(F.data == "earn")
     async def callback_earn(callback: types.CallbackQuery):
@@ -1499,7 +1557,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
             text = message.text or message.caption or ""
 
-            # Тейки на паузе
             if cfg.takes_paused:
                 take_data = {
                     'user_id': uid, 'bot_id': bid, 'text': text,
@@ -1521,7 +1578,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 )
                 return True
 
-            # Модерация
             needs_moderation = cfg.manual_control
             moderation_reason = "Ручной контроль"
 
@@ -1616,7 +1672,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 return
             await process_take_message(message, bot_id, bot_instance)
 
-        # Модерация тейков
         @router.callback_query(F.data.startswith("take_approve_"))
         async def take_approve(callback: types.CallbackQuery):
             take_id = callback.data[13:]
@@ -1719,7 +1774,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await callback.message.edit_text("🛒 Магазин:", reply_markup=build_shop_menu(bot_id))
             await callback.answer()
 
-        # Автопересылка объявлений
         @router.message(
             F.text.contains("#продажа") | F.caption.contains("#продажа") |
             F.text.contains("#обмен") | F.caption.contains("#обмен")
@@ -1740,7 +1794,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             except Exception as e:
                 logger.error(f"Ошибка автопересылки: {e}")
 
-        # Пиар
         @router.callback_query(F.data.startswith("promo_"))
         async def callback_promo(callback: types.CallbackQuery, state: FSMContext):
             if callback.data == "promo_pay":
@@ -1818,7 +1871,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 await callback.answer()
                 return
 
-            # Начало оформления пиара
             is_pinned = callback.data == "promo_pinned"
             can_promo, promo_msg = can_use_promo(callback.from_user.id, bot_id)
             if not can_promo:
@@ -1887,7 +1939,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             )
             await state.set_state(PromoStates.WaitingConfirmation)
 
-        # Покупка товара
         @router.callback_query(F.data == "buy_product")
         async def callback_buy_product(callback: types.CallbackQuery, state: FSMContext):
             await callback.message.edit_text("🛍 Отправьте фото товара:", reply_markup=build_cancel_keyboard())
@@ -2100,7 +2151,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await message.answer("Пользователь не найден.", reply_markup=build_cancel_keyboard())
         await state.clear()
 
-    # Переключение тейков (пауза)
     @router.callback_query(F.data == "adm_toggle_takes")
     async def admin_toggle_takes(callback: types.CallbackQuery):
         if not check_owner(callback.from_user.id, bot_id):
@@ -2148,7 +2198,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
         await callback.message.edit_text("Админ-панель:", reply_markup=build_admin_menu(callback.from_user.id, bot_id))
 
-    # Ручной контроль
     @router.callback_query(F.data == "adm_toggle_manual")
     async def admin_toggle_manual(callback: types.CallbackQuery):
         if not check_owner(callback.from_user.id, bot_id):
@@ -2163,7 +2212,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         await callback.answer(status, show_alert=True)
         await callback.message.edit_text("Админ-панель:", reply_markup=build_admin_menu(callback.from_user.id, bot_id))
 
-    # Викторина в канале
     @router.callback_query(F.data == "adm_channel_quiz")
     async def admin_channel_quiz_start(callback: types.CallbackQuery, state: FSMContext):
         if not check_admin(callback.from_user.id, bot_id):
@@ -2405,7 +2453,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         await callback.message.edit_text(f"👮 Модераторы: {text}", reply_markup=build_mods_menu())
         await callback.answer()
 
-    # Спецкнопки главного админа
+    # Спецкнопки
     if bot_id == "main":
         @router.callback_query(F.data == "adm_reset_rates")
         async def admin_reset_rates(callback: types.CallbackQuery):
@@ -2438,11 +2486,11 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         )
         await callback.answer()
 
-    # =================== ОТСЛЕЖИВАНИЕ КОММЕНТАРИЕВ В КАНАЛЕ ===================
+    # =================== ОТСЛЕЖИВАНИЕ КОММЕНТАРИЕВ ===================
 
     @router.channel_post()
     async def handle_channel_post(message: types.Message):
-        """Отслеживание новых постов в канале — создание аукционов по #аукцион."""
+        """Отслеживание постов в канале — создание аукционов по #аукцион."""
         if not message.text:
             return
 
@@ -2469,7 +2517,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
     @router.message(F.reply_to_message)
     async def handle_comment_reply(message: types.Message):
-        """Обработка комментариев под постами канала — викторины и аукционы."""
+        """Обработка комментариев — викторины и аукционы."""
         if not message.text:
             return
         if not message.reply_to_message:
@@ -2479,7 +2527,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         if not cfg:
             return
 
-        # Получаем ID оригинального поста в канале
         original_msg_id = None
         if message.reply_to_message.forward_from_message_id:
             original_msg_id = str(message.reply_to_message.forward_from_message_id)
@@ -2494,7 +2541,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         comment_text = message.text.strip()
         comment_text_lower = comment_text.lower()
 
-        # ===== ПРОВЕРКА ВИКТОРИНЫ =====
+        # ===== ВИКТОРИНА =====
         quiz = config.active_quizzes.get(original_msg_id)
         if quiz and not quiz.get('solved') and quiz.get('bot_id') == bot_id:
             correct_answer = quiz.get('answer', '').lower()
@@ -2515,13 +2562,13 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 except Exception as e:
                     logger.error(f"Ошибка ответа на викторину: {e}")
 
-                logger.info(f"Викторина {original_msg_id} решена пользователем {user_id}, награда: {reward}")
+                logger.info(f"Викторина {original_msg_id} решена пользователем {user_id}")
 
                 if original_msg_id in config.active_quizzes:
                     del config.active_quizzes[original_msg_id]
                     config.save()
 
-        # ===== ПРОВЕРКА АУКЦИОНА =====
+        # ===== АУКЦИОН =====
         auction = config.active_auctions.get(original_msg_id)
         if auction and auction.get('bot_id') == bot_id:
             bet_match = BET_PATTERN.search(message.text)
@@ -2532,6 +2579,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 register_user(message.from_user, bot_id)
                 user_balance = db.get_balance(user_id, bot_id)
 
+                # Проверка баланса
                 if user_balance != float('inf') and user_balance < bet_amount:
                     try:
                         await message.reply(
@@ -2542,6 +2590,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                         logger.error(f"Ошибка ответа аукциона: {e}")
                     return
 
+                # Проверка что ставка больше текущей
                 current_bid = auction.get('current_bid', 0)
                 if bet_amount <= current_bid:
                     try:
@@ -2553,6 +2602,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                         logger.error(f"Ошибка ответа аукциона: {e}")
                     return
 
+                # Принимаем ставку
                 auction['current_bidder'] = user_id
                 auction['current_bid'] = bet_amount
                 auction['last_bid_time'] = datetime.now().isoformat()
@@ -2580,7 +2630,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 # ====================== ПОДКЛЮЧЕНИЕ БОТОВ ======================
 
 def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
-    """Обработчики подключения новых ботов (только главный бот)."""
+    """Обработчики подключения новых ботов."""
     router = Router()
 
     @router.callback_query(F.data == "connect_bot")
@@ -2623,7 +2673,7 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
             await callback.answer("Заявка не найдена", show_alert=True)
             return
         confirm_kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✅ Да, уверен", callback_data=f"request_confirm_{rid}"),
+            InlineKeyboardButton(text="✅ Да", callback_data=f"request_confirm_{rid}"),
             InlineKeyboardButton(text="❌ Нет", callback_data=f"request_back_{rid}")
         ]])
         await callback.message.edit_text("Вы уверены?", reply_markup=confirm_kb)
@@ -2660,7 +2710,7 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
         config.save()
         try:
             await bot_instance.send_message(req.user_id, "✅ Заявка одобрена!\n\nОтправьте токен бота от @BotFather:")
-            await callback.message.edit_text("⏳ Ожидаем токен от пользователя...")
+            await callback.message.edit_text("⏳ Ожидаем токен...")
         except Exception as e:
             await callback.message.edit_text(f"❌ Ошибка: {e}")
         await callback.answer()
@@ -2742,12 +2792,12 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
         if module_type == "takes":
             req.modules = ["takes"]
             config.save()
-            await callback.message.edit_text("Отправьте ссылку/username канала для тейков (@channel):")
+            await callback.message.edit_text("Отправьте канал для тейков (@channel):")
             await state.set_state(ConnectBotStates.WaitingTakesChannel)
         elif module_type == "shop":
             req.modules = ["shop"]
             config.save()
-            await callback.message.edit_text("Отправьте ссылку/username группы для магазина (@group):")
+            await callback.message.edit_text("Отправьте группу для магазина (@group):")
             await state.set_state(ConnectBotStates.WaitingShopChannel)
         else:
             req.modules = ["takes", "shop"]
@@ -2839,7 +2889,7 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
 # ====================== ГЛАВНАЯ ФУНКЦИЯ ======================
 
 async def main():
-    """Точка входа: подключение БД, загрузка конфигурации, запуск ботов."""
+    """Точка входа."""
     logger.info("Подключение к базе данных...")
     db.connect()
     logger.info("Загрузка конфигурации...")
