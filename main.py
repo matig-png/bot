@@ -1053,32 +1053,49 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
             last_bid_time = datetime.fromisoformat(auction['last_bid_time'])
             snapshot_time = last_bid_time
 
+            # Ждём discussion_message_id если его ещё нет (до 10 секунд)
+            if discussion_id and not discussion_message_id:
+                for _ in range(20):  # 20 * 0.5 = 10 секунд
+                    await asyncio.sleep(0.5)
+                    auction = config.active_auctions.get(auction_id)
+                    if not auction or auction.get('finished'):
+                        return
+                    discussion_message_id = auction.get('discussion_message_id')
+                    if discussion_message_id:
+                        logger.info(f"Аукцион {auction_id}: discussion_message_id получен: {discussion_message_id}")
+                        break
+
             async def send_countdown(text: str):
                 """Отправка цифры отсчёта как комментарий под постом."""
-                # Приоритет: reply на пересланный пост в группе комментариев
-                if discussion_id and discussion_message_id:
+                # Перечитываем на случай если пришёл пока ждали
+                current_auction = config.active_auctions.get(auction_id)
+                current_disc_msg_id = current_auction.get('discussion_message_id') if current_auction else discussion_message_id
+                current_disc_id = current_auction.get('discussion_chat_id') if current_auction else discussion_id
+
+                # Приоритет 1: reply на пересланный пост в группе комментариев
+                if current_disc_id and current_disc_msg_id:
                     try:
                         await bot_instance.send_message(
-                            chat_id=discussion_id,
+                            chat_id=current_disc_id,
                             text=text,
-                            reply_to_message_id=discussion_message_id
+                            reply_to_message_id=current_disc_msg_id
                         )
                         return
                     except Exception as e:
                         logger.error(f"Ошибка reply в группу: {e}")
 
-                # Fallback: просто в группу без reply
-                if discussion_id:
+                # Приоритет 2: просто в группу без reply
+                if current_disc_id:
                     try:
                         await bot_instance.send_message(
-                            chat_id=discussion_id,
+                            chat_id=current_disc_id,
                             text=text
                         )
                         return
                     except Exception as e:
-                        logger.error(f"Ошибка отправки в группу: {e}")
+                        logger.error(f"Ошибка в группу: {e}")
 
-                # Fallback: в канал с reply на пост
+                # Приоритет 3: в канал с reply
                 try:
                     await bot_instance.send_message(
                         chat_id=channel_id,
@@ -1098,7 +1115,6 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
             auction = config.active_auctions.get(auction_id)
             if not auction or auction.get('finished'):
                 return
-            # Обновляем discussion_message_id — мог прийти пока ждали
             discussion_message_id = auction.get('discussion_message_id')
             current_last = datetime.fromisoformat(auction['last_bid_time'])
             if current_last > snapshot_time:
