@@ -1587,7 +1587,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
     # =================== ТЕЙКИ ===================
 
-    if bot_config and "takes" in bot_config.modules:
+      if bot_config and "takes" in bot_config.modules:
 
         async def process_take_message(message: types.Message, bid: str, bot: Bot):
             """Общая логика обработки тейка."""
@@ -1713,7 +1713,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await process_take_message(message, bot_id, bot_instance)
             await state.clear()
 
-              @router.message(F.text.contains("#тейк") | F.caption.contains("#тейк"))
+        @router.message(F.text.contains("#тейк") | F.caption.contains("#тейк"))
         async def auto_forward_take(message: types.Message, state: FSMContext):
             # Игнорируем посты из каналов — только личные чаты и группы
             if message.chat.type == "channel":
