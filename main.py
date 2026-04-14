@@ -36,14 +36,17 @@ MAIN_ADMIN_ID = 6098677257
 ADMIN_IDS = {6098677257, 8092280284, 8366347415}
 DB_FILE = "bot_database.db"
 CONFIG_FILE = "bot_config.json"
-
-# ID канала для объявлений главного бота
 MAIN_ANNOUNCEMENT_CHANNEL = "-1003904052294"
+
+# Максимальное количество тейков у пользователя
+MAX_TAKES = 3
+# Время восстановления одного тейка в минутах
+TAKE_COOLDOWN_MINUTES = 3
 
 # Паттерны для аукциона
 BET_PATTERN = re.compile(r'(?:ставлю|ставка)\s+(\d+)', re.IGNORECASE)
 PASS_PATTERN = re.compile(r'^(?:пас|лив)$', re.IGNORECASE)
-MIN_BID_INCREMENT = 5  # Минимальное повышение ставки
+MIN_BID_INCREMENT = 5
 
 TG_LINK_PATTERN = re.compile(
     r'(?:https?://)?(?:t\.me|telegram\.me)/(?:joinchat/)?([a-zA-Z0-9_]+)',
@@ -62,7 +65,7 @@ class Database:
 
     def connect(self):
         """Подключение и создание таблиц."""
-        self.conn = sqlite3.connect(self.db_path)
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._create_tables()
         logger.info(f"База данных подключена: {self.db_path}")
@@ -98,8 +101,20 @@ class Database:
             is_owner INTEGER NOT NULL DEFAULT 0,
             activated_at TEXT NOT NULL DEFAULT '',
             last_promo_at TEXT NOT NULL DEFAULT '',
+            is_announcement_mod INTEGER NOT NULL DEFAULT 0,
+            is_announcement_blocked INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (user_id, bot_id)
         )''')
+
+        # Обратная совместимость: добавляем колонки если не существуют
+        try:
+            cursor.execute('ALTER TABLE user_bot_data ADD COLUMN is_announcement_mod INTEGER NOT NULL DEFAULT 0')
+        except Exception:
+            pass
+        try:
+            cursor.execute('ALTER TABLE user_bot_data ADD COLUMN is_announcement_blocked INTEGER NOT NULL DEFAULT 0')
+        except Exception:
+            pass
 
         cursor.execute('''CREATE TABLE IF NOT EXISTS take_timestamps (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -109,6 +124,8 @@ class Database:
         )''')
 
         self.conn.commit()
+
+    # --- Пользователи ---
 
     def get_user(self, user_id: int) -> Optional[Dict]:
         """Получить данные пользователя."""
@@ -130,6 +147,8 @@ class Database:
             (username, name, user_id)
         )
         self.conn.commit()
+
+    # --- Балансы ---
 
     def get_balance(self, user_id: int, bot_id: str) -> float:
         """Получить баланс пользователя."""
@@ -172,6 +191,8 @@ class Database:
         self.set_balance(user_id, bot_id, current - amount)
         return True
 
+    # --- Данные пользователя для бота ---
+
     def get_bot_data(self, user_id: int, bot_id: str) -> Dict:
         """Получить данные пользователя для конкретного бота."""
         cursor = self.conn.cursor()
@@ -187,7 +208,9 @@ class Database:
             'quiz_passed': 0, 'show_in_top': 1,
             'is_blocked': 0, 'is_frozen': 0,
             'is_moderator': 0, 'is_admin': 0, 'is_owner': 0,
-            'activated_at': '', 'last_promo_at': ''
+            'activated_at': '', 'last_promo_at': '',
+            'is_announcement_mod': 0,
+            'is_announcement_blocked': 0
         }
 
     def set_bot_data(self, user_id: int, bot_id: str, **kwargs):
@@ -197,23 +220,26 @@ class Database:
         cursor = self.conn.cursor()
         cursor.execute('''INSERT OR REPLACE INTO user_bot_data
             (user_id, bot_id, quiz_passed, show_in_top, is_blocked, is_frozen,
-             is_moderator, is_admin, is_owner, activated_at, last_promo_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+             is_moderator, is_admin, is_owner, activated_at, last_promo_at,
+             is_announcement_mod, is_announcement_blocked)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             (user_id, bot_id, existing['quiz_passed'], existing['show_in_top'],
              existing['is_blocked'], existing['is_frozen'], existing['is_moderator'],
              existing['is_admin'], existing['is_owner'], existing['activated_at'],
-             existing['last_promo_at']))
+             existing['last_promo_at'], existing.get('is_announcement_mod', 0),
+             existing.get('is_announcement_blocked', 0)))
         self.conn.commit()
 
-    def get_last_take_time(self, user_id: int, bot_id: str) -> Optional[str]:
-        """Время последнего тейка."""
+    # --- Тейки ---
+
+    def get_take_timestamps(self, user_id: int, bot_id: str, since: datetime) -> List[str]:
+        """Получить все временные метки тейков начиная с указанного времени."""
         cursor = self.conn.cursor()
         cursor.execute(
-            'SELECT timestamp FROM take_timestamps WHERE user_id = ? AND bot_id = ? ORDER BY id DESC LIMIT 1',
-            (user_id, bot_id)
+            'SELECT timestamp FROM take_timestamps WHERE user_id = ? AND bot_id = ? AND timestamp > ? ORDER BY timestamp DESC',
+            (user_id, bot_id, since.isoformat())
         )
-        row = cursor.fetchone()
-        return row['timestamp'] if row else None
+        return [row['timestamp'] for row in cursor.fetchall()]
 
     def add_take_timestamp(self, user_id: int, bot_id: str):
         """Записать время отправки тейка."""
@@ -226,6 +252,8 @@ class Database:
             SELECT id FROM take_timestamps WHERE user_id = ? AND bot_id = ? ORDER BY id DESC LIMIT 20
         ) AND user_id = ? AND bot_id = ?''', (user_id, bot_id, user_id, bot_id))
         self.conn.commit()
+
+    # --- Списки ---
 
     def get_all_users_for_bot(self, bot_id: str) -> List[Dict]:
         """Все пользователи с балансами в конкретном боте."""
@@ -271,7 +299,7 @@ class BotConfig:
     channel_url: str = ""
     takes_channel: str = ""
     shop_channel: str = ""
-    announcement_channel: str = ""  # Канал для объявлений
+    announcement_channel: str = ""
     modules: List[str] = field(default_factory=lambda: ["takes", "shop"])
     take_cooldown_minutes: int = 3
     quiz_reward: int = 50
@@ -305,7 +333,7 @@ class PendingBotRequest:
     modules: List[str] = field(default_factory=list)
     takes_channel: str = ""
     shop_channel: str = ""
-    announcement_channel: str = ""  # Канал для объявлений подключённого бота
+    announcement_channel: str = ""
 
 
 class ConfigStorage:
@@ -334,7 +362,6 @@ class ConfigStorage:
                     data = json.load(f)
 
                 for bot_id, bot_data in data.get('bots', {}).items():
-                    # Обратная совместимость: добавляем поля если их нет
                     if 'announcement_channel' not in bot_data:
                         bot_data['announcement_channel'] = ""
                     self.bots[bot_id] = BotConfig(**bot_data)
@@ -358,7 +385,6 @@ class ConfigStorage:
         except Exception as e:
             logger.error(f"Ошибка загрузки конфигурации: {e}")
 
-        # Создаём главного бота если нет
         if "main" not in self.bots:
             self.bots["main"] = BotConfig(
                 bot_id="main",
@@ -370,20 +396,18 @@ class ConfigStorage:
                 shop_channel="@wingsoffiremagazine",
                 announcement_channel=MAIN_ANNOUNCEMENT_CHANNEL,
                 modules=["takes", "shop"],
-                take_cooldown_minutes=3,
+                take_cooldown_minutes=TAKE_COOLDOWN_MINUTES,
                 owner_id=MAIN_ADMIN_ID,
                 base_exchange_rate=1.0
             )
             self.exchange_rates.rates["main"] = 1.0
-            logger.info(f"Главный бот создан с каналом объявлений: {MAIN_ANNOUNCEMENT_CHANNEL}")
+            logger.info(f"Главный бот создан")
             self.save()
         else:
-            # ИСПРАВЛЕНИЕ: Обновляем announcement_channel если он пустой
-            # Это происходит когда файл старый и поля не было
             needs_save = False
             if not self.bots["main"].announcement_channel:
                 self.bots["main"].announcement_channel = MAIN_ANNOUNCEMENT_CHANNEL
-                logger.info(f"Обновлён канал объявлений для главного бота: {MAIN_ANNOUNCEMENT_CHANNEL}")
+                logger.info(f"Обновлён канал объявлений: {MAIN_ANNOUNCEMENT_CHANNEL}")
                 needs_save = True
             if needs_save:
                 self.save()
@@ -427,6 +451,8 @@ class AdminStates(StatesGroup):
     WaitingQuizQuestion = State()
     WaitingQuizReward = State()
     WaitingQuizAnswer = State()
+    WaitingAnnouncementModUsername = State()
+    WaitingRemoveAnnouncementModUsername = State()
 
 
 class TransferStates(StatesGroup):
@@ -474,6 +500,7 @@ class QuizStates(StatesGroup):
     Question1 = State()
     Question2 = State()
     Question3 = State()
+
 
 # ====================== ЦЕНЗУРА ======================
 
@@ -555,7 +582,7 @@ async def check_telegram_links(text: str, bot_instance: Bot) -> Tuple[bool, str]
 # ====================== УТИЛИТЫ ======================
 
 def register_user(user: User, bot_id: str):
-    """Регистрация пользователя в БД."""
+    """Регистрация пользователя в БД при первом обращении к боту."""
     uid = user.id
     username = user.username or f"user{uid}"
     name = user.full_name
@@ -578,7 +605,7 @@ def register_user(user: User, bot_id: str):
 
         db.set_bot_data(uid, bot_id,
             quiz_passed=0, show_in_top=1, is_blocked=0, is_frozen=0,
-            is_moderator=0,
+            is_moderator=0, is_announcement_mod=0, is_announcement_blocked=0,
             is_admin=1 if (is_admin_flag or is_owner_flag or is_main_owner) else 0,
             is_owner=1 if (is_owner_flag or is_main_owner) else 0,
             activated_at=datetime.now().isoformat(),
@@ -598,31 +625,72 @@ def check_owner(uid: int, bot_id: str) -> bool:
 
 
 def check_moderator(uid: int, bot_id: str) -> bool:
-    """Является ли пользователь модератором."""
+    """Является ли пользователь модератором тейков (или выше)."""
     data = db.get_bot_data(uid, bot_id)
     return bool(data.get('is_moderator') or data.get('is_admin') or data.get('is_owner'))
 
 
-def can_send_take(uid: int, bot_id: str) -> Tuple[bool, str]:
-    """Проверка кулдауна тейков."""
+def check_announcement_moderator(uid: int, bot_id: str) -> bool:
+    """Является ли пользователь модератором объявлений."""
+    data = db.get_bot_data(uid, bot_id)
+    return bool(data.get('is_announcement_mod') or data.get('is_admin') or data.get('is_owner'))
+
+
+def check_announcement_blocked(uid: int, bot_id: str) -> bool:
+    """Заблокирован ли пользователь для объявлений (независимо от тейков)."""
+    data = db.get_bot_data(uid, bot_id)
+    return bool(data.get('is_announcement_blocked', 0))
+
+
+def can_send_take(uid: int, bot_id: str) -> Tuple[bool, int, str]:
+    """
+    Проверка лимита тейков.
+    У пользователя MAX_TAKES тейков, каждый восстанавливается через TAKE_COOLDOWN_MINUTES минут.
+    Возвращает: (можно_ли, осталось_тейков, сообщение).
+    """
     bot_cfg = config.bots.get(bot_id)
     if not bot_cfg:
-        return False, "Ошибка конфигурации"
-    last = db.get_last_take_time(uid, bot_id)
-    if not last:
-        return True, "Можно отправить"
-    try:
-        last_dt = datetime.fromisoformat(last)
-    except Exception:
-        return True, "Можно отправить"
-    next_available = last_dt + timedelta(minutes=bot_cfg.take_cooldown_minutes)
+        return False, 0, "Ошибка конфигурации"
+
+    cooldown_minutes = bot_cfg.take_cooldown_minutes
     now = datetime.now()
-    if now >= next_available:
-        return True, "Можно отправить"
-    remaining = next_available - now
-    minutes = int(remaining.total_seconds() // 60)
-    seconds = int(remaining.total_seconds() % 60)
-    return False, f"Подождите {minutes}м {seconds}с"
+
+    # Получаем тейки за последние MAX_TAKES * cooldown_minutes минут
+    since = now - timedelta(minutes=MAX_TAKES * cooldown_minutes)
+    recent_timestamps = db.get_take_timestamps(uid, bot_id, since)
+
+    # Считаем сколько тейков ещё занимают слоты (не восстановились)
+    used_slots = 0
+    for ts_str in recent_timestamps:
+        try:
+            ts = datetime.fromisoformat(ts_str)
+            minutes_ago = (now - ts).total_seconds() / 60
+            if minutes_ago < cooldown_minutes:
+                used_slots += 1
+        except Exception:
+            pass
+
+    remaining = MAX_TAKES - used_slots
+
+    if remaining > 0:
+        return True, remaining, f"Тейков: {remaining}/{MAX_TAKES}"
+
+    # Находим когда восстановится следующий тейк
+    if recent_timestamps:
+        sorted_ts = sorted(recent_timestamps)
+        for ts_str in sorted_ts:
+            try:
+                ts = datetime.fromisoformat(ts_str)
+                next_available = ts + timedelta(minutes=cooldown_minutes)
+                if next_available > now:
+                    remaining_time = next_available - now
+                    mins = int(remaining_time.total_seconds() // 60)
+                    secs = int(remaining_time.total_seconds() % 60)
+                    return False, 0, f"Нет тейков. Следующий через {mins}м {secs}с (0/{MAX_TAKES})"
+            except Exception:
+                pass
+
+    return True, 1, f"Тейков: 1/{MAX_TAKES}"
 
 
 def can_use_promo(uid: int, bot_id: str) -> Tuple[bool, str]:
@@ -834,6 +902,11 @@ def build_admin_menu(uid: int, bot_id: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="👮 Модераторы", callback_data="adm_mods")
         )
 
+        if bot_cfg and "shop" in bot_cfg.modules:
+            builder.row(
+                InlineKeyboardButton(text="📢 Модер объявлений", callback_data="adm_announcement_mods")
+            )
+
         if bot_cfg and "takes" in bot_cfg.modules:
             pause_label = "▶️ Включить тейки" if bot_cfg.takes_paused else "⏸ Отключить тейки"
             builder.row(InlineKeyboardButton(text=pause_label, callback_data="adm_toggle_takes"))
@@ -880,7 +953,7 @@ def build_censor_menu() -> InlineKeyboardMarkup:
 
 
 def build_mods_menu() -> InlineKeyboardMarkup:
-    """Меню модераторов."""
+    """Меню модераторов тейков."""
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="➕ Назначить", callback_data="mod_assign"),
@@ -888,6 +961,20 @@ def build_mods_menu() -> InlineKeyboardMarkup:
     )
     builder.row(
         InlineKeyboardButton(text="📋 Список", callback_data="mod_list"),
+        InlineKeyboardButton(text="◀️ Назад", callback_data="admin_mode")
+    )
+    return builder.as_markup()
+
+
+def build_announcement_mods_menu() -> InlineKeyboardMarkup:
+    """Меню модераторов объявлений."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="➕ Назначить", callback_data="ann_mod_assign"),
+        InlineKeyboardButton(text="➖ Снять", callback_data="ann_mod_remove")
+    )
+    builder.row(
+        InlineKeyboardButton(text="📋 Список", callback_data="ann_mod_list"),
         InlineKeyboardButton(text="◀️ Назад", callback_data="admin_mode")
     )
     return builder.as_markup()
@@ -917,16 +1004,96 @@ def build_modules_keyboard() -> InlineKeyboardMarkup:
 
 
 def build_take_moderation_keyboard(take_id: str, uid: int, is_blocked: bool) -> InlineKeyboardMarkup:
-    """Клавиатура модерации тейка."""
+    """
+    Клавиатура модерации тейка — пользователь НЕ заблокирован в тейках.
+    Показывает кнопку 'Заблокировать (тейки)'.
+    """
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="✅ Отправить", callback_data=f"take_approve_{take_id}"),
         InlineKeyboardButton(text="❌ Отклонить", callback_data=f"take_reject_{take_id}")
     )
-    if is_blocked:
-        builder.row(InlineKeyboardButton(text="🔓 Разблокировать", callback_data=f"user_unblock_{uid}"))
-    else:
-        builder.row(InlineKeyboardButton(text="🚫 Заблокировать", callback_data=f"user_block_{uid}"))
+    builder.row(
+        InlineKeyboardButton(text="🚫 Заблокировать (тейки)", callback_data=f"user_block_{uid}")
+    )
+    return builder.as_markup()
+
+
+def build_take_moderation_keyboard_blocked(take_id: str, uid: int) -> InlineKeyboardMarkup:
+    """
+    Клавиатура модерации тейка — пользователь уже заблокирован в тейках.
+    Показывает кнопку 'Разблокировать (тейки)'.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ Отправить", callback_data=f"take_approve_{take_id}"),
+        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"take_reject_{take_id}")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔓 Разблокировать (тейки)", callback_data=f"take_unblock_{uid}")
+    )
+    return builder.as_markup()
+
+
+def build_published_take_keyboard(channel_msg_id: int, uid: int, is_blocked: bool) -> InlineKeyboardMarkup:
+    """
+    Клавиатура для уже опубликованных тейков — пользователь НЕ заблокирован.
+    Кнопка 'Удалить' вместо 'Отклонить'.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🗑 Удалить из канала", callback_data=f"take_delete_{channel_msg_id}")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🚫 Заблокировать (тейки)", callback_data=f"user_block_{uid}")
+    )
+    return builder.as_markup()
+
+
+def build_published_take_keyboard_blocked(channel_msg_id: int, uid: int) -> InlineKeyboardMarkup:
+    """
+    Клавиатура для уже опубликованных тейков — пользователь уже заблокирован.
+    Показывает кнопку 'Разблокировать (тейки)'.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🗑 Удалить из канала", callback_data=f"take_delete_{channel_msg_id}")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔓 Разблокировать (тейки)", callback_data=f"take_unblock_{uid}")
+    )
+    return builder.as_markup()
+
+
+def build_announcement_moderation_keyboard(ann_id: str, uid: int) -> InlineKeyboardMarkup:
+    """
+    Клавиатура модерации объявления — пользователь НЕ заблокирован в объявлениях.
+    Блокировка объявлений независима от блокировки тейков.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ Одобрить", callback_data=f"ann_approve_{ann_id}"),
+        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"ann_reject_{ann_id}")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🚫 Заблокировать (объявления)", callback_data=f"ann_block_{uid}_{ann_id}")
+    )
+    return builder.as_markup()
+
+
+def build_announcement_moderation_keyboard_blocked(ann_id: str, uid: int) -> InlineKeyboardMarkup:
+    """
+    Клавиатура модерации объявления — пользователь уже заблокирован в объявлениях.
+    Показывает кнопку 'Разблокировать (объявления)'.
+    """
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ Одобрить", callback_data=f"ann_approve_{ann_id}"),
+        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"ann_reject_{ann_id}")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔓 Разблокировать (объявления)", callback_data=f"ann_unblock_{uid}_{ann_id}")
+    )
     return builder.as_markup()
 
 
@@ -949,31 +1116,70 @@ def build_quiz_keyboard(question_num: int) -> InlineKeyboardMarkup:
 # ====================== ПЕРЕСЫЛКА ТЕЙКА ======================
 
 async def forward_take_to_channel(message: types.Message, bot_id: str, bot_instance: Bot) -> Optional[types.Message]:
-    """Пересылает тейк в канал с цензурой мата."""
+    """
+    Пересылает тейк в канал с цензурой мата.
+    Сохраняет спойлеры на медиа и всё форматирование текста.
+    """
     try:
         bot_cfg = config.bots.get(bot_id)
         if not bot_cfg or not bot_cfg.takes_channel:
             return None
+
         text = message.text or message.caption or ""
         censored, has_profanity = censor_profanity(text, bot_id)
+
+        # Проверяем наличие спойлера на медиа
+        has_media_spoiler = getattr(message, 'has_media_spoiler', False)
+
         send_kwargs = {
             "caption": censored if has_profanity else text,
-            "parse_mode": "HTML" if has_profanity else None
+            "parse_mode": "HTML" if has_profanity else None,
         }
+
         if message.photo:
-            return await bot_instance.send_photo(bot_cfg.takes_channel, photo=message.photo[-1].file_id, **send_kwargs)
+            return await bot_instance.send_photo(
+                bot_cfg.takes_channel,
+                photo=message.photo[-1].file_id,
+                has_spoiler=has_media_spoiler,
+                **send_kwargs
+            )
         elif message.video:
-            return await bot_instance.send_video(bot_cfg.takes_channel, video=message.video.file_id, **send_kwargs)
+            return await bot_instance.send_video(
+                bot_cfg.takes_channel,
+                video=message.video.file_id,
+                has_spoiler=has_media_spoiler,
+                **send_kwargs
+            )
         elif message.animation:
-            return await bot_instance.send_animation(bot_cfg.takes_channel, animation=message.animation.file_id, **send_kwargs)
+            return await bot_instance.send_animation(
+                bot_cfg.takes_channel,
+                animation=message.animation.file_id,
+                has_spoiler=has_media_spoiler,
+                **send_kwargs
+            )
         elif message.document:
-            return await bot_instance.send_document(bot_cfg.takes_channel, document=message.document.file_id, **send_kwargs)
+            return await bot_instance.send_document(
+                bot_cfg.takes_channel,
+                document=message.document.file_id,
+                **send_kwargs
+            )
         elif message.voice:
-            return await bot_instance.send_voice(bot_cfg.takes_channel, voice=message.voice.file_id, **send_kwargs)
+            return await bot_instance.send_voice(
+                bot_cfg.takes_channel,
+                voice=message.voice.file_id,
+                **send_kwargs
+            )
         elif message.audio:
-            return await bot_instance.send_audio(bot_cfg.takes_channel, audio=message.audio.file_id, **send_kwargs)
+            return await bot_instance.send_audio(
+                bot_cfg.takes_channel,
+                audio=message.audio.file_id,
+                **send_kwargs
+            )
         elif message.sticker:
-            return await bot_instance.send_sticker(bot_cfg.takes_channel, sticker=message.sticker.file_id)
+            return await bot_instance.send_sticker(
+                bot_cfg.takes_channel,
+                sticker=message.sticker.file_id
+            )
         else:
             return await bot_instance.send_message(
                 bot_cfg.takes_channel,
@@ -1018,9 +1224,8 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
     """
     Таймер аукциона.
     Отсчёт начинается ТОЛЬКО после первой ставки.
-    Без ставок — аукцион просто ждёт.
-    Отсчёт — в комментариях (reply на пересланный пост в группе).
-    Победитель — постом в канале.
+    Отсчёт пишется В КОММЕНТАРИЯХ под постом.
+    Победитель объявляется ПОСТОМ В КАНАЛЕ.
     """
     bot_cfg = config.bots.get(bot_id)
     if not bot_cfg:
@@ -1032,15 +1237,11 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
             auction = config.active_auctions.get(auction_id)
             if not auction or auction.get('finished'):
                 return
-
-            # Если есть хотя бы одна ставка — начинаем логику отсчёта
             if auction.get('current_bidder') is not None:
                 break
-
-            # Ставок ещё нет — ждём 5 секунд и проверяем снова
             await asyncio.sleep(5)
 
-        # Основной цикл отсчёта — запускается только когда есть ставки
+        # Основной цикл отсчёта
         while True:
             auction = config.active_auctions.get(auction_id)
             if not auction or auction.get('finished'):
@@ -1048,31 +1249,28 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
 
             channel_id = auction['channel']
             discussion_id = auction.get('discussion_chat_id')
-            discussion_message_id = auction.get('discussion_message_id')
             message_id = auction['message_id']
             last_bid_time = datetime.fromisoformat(auction['last_bid_time'])
             snapshot_time = last_bid_time
 
-            # Ждём discussion_message_id если его ещё нет (до 10 секунд)
-            if discussion_id and not discussion_message_id:
-                for _ in range(20):  # 20 * 0.5 = 10 секунд
+            # Ждём discussion_message_id до 15 секунд
+            if discussion_id and not auction.get('discussion_message_id'):
+                for _ in range(30):
                     await asyncio.sleep(0.5)
                     auction = config.active_auctions.get(auction_id)
                     if not auction or auction.get('finished'):
                         return
-                    discussion_message_id = auction.get('discussion_message_id')
-                    if discussion_message_id:
-                        logger.info(f"Аукцион {auction_id}: discussion_message_id получен: {discussion_message_id}")
+                    if auction.get('discussion_message_id'):
+                        logger.info(f"Аукцион {auction_id}: discussion_message_id получен")
                         break
 
             async def send_countdown(text: str):
                 """Отправка цифры отсчёта как комментарий под постом."""
-                # Перечитываем на случай если пришёл пока ждали
                 current_auction = config.active_auctions.get(auction_id)
-                current_disc_msg_id = current_auction.get('discussion_message_id') if current_auction else discussion_message_id
+                current_disc_msg_id = current_auction.get('discussion_message_id') if current_auction else None
                 current_disc_id = current_auction.get('discussion_chat_id') if current_auction else discussion_id
 
-                # Приоритет 1: reply на пересланный пост в группе комментариев
+                # Приоритет 1: reply на пост в группе комментариев
                 if current_disc_id and current_disc_msg_id:
                     try:
                         await bot_instance.send_message(
@@ -1087,10 +1285,7 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
                 # Приоритет 2: просто в группу без reply
                 if current_disc_id:
                     try:
-                        await bot_instance.send_message(
-                            chat_id=current_disc_id,
-                            text=text
-                        )
+                        await bot_instance.send_message(chat_id=current_disc_id, text=text)
                         return
                     except Exception as e:
                         logger.error(f"Ошибка в группу: {e}")
@@ -1098,9 +1293,7 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
                 # Приоритет 3: в канал с reply
                 try:
                     await bot_instance.send_message(
-                        chat_id=channel_id,
-                        text=text,
-                        reply_to_message_id=message_id
+                        chat_id=channel_id, text=text, reply_to_message_id=message_id
                     )
                 except Exception as e:
                     logger.error(f"Ошибка отсчёта {text}: {e}")
@@ -1111,14 +1304,13 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
             if now < wait_2min:
                 await asyncio.sleep((wait_2min - now).total_seconds())
 
-            # Перечитываем — могла прийти новая ставка
             auction = config.active_auctions.get(auction_id)
             if not auction or auction.get('finished'):
                 return
             discussion_message_id = auction.get('discussion_message_id')
             current_last = datetime.fromisoformat(auction['last_bid_time'])
             if current_last > snapshot_time:
-                logger.info(f"Аукцион {auction_id}: новая ставка во время ожидания, сброс")
+                logger.info(f"Аукцион {auction_id}: новая ставка, сброс")
                 continue
 
             # Пишем "3" в комментариях
@@ -1130,7 +1322,6 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
             if not auction or auction.get('finished'):
                 return
             if datetime.fromisoformat(auction['last_bid_time']) > snapshot_time:
-                logger.info(f"Аукцион {auction_id}: новая ставка после '3', сброс")
                 continue
 
             # Пишем "2" в комментариях
@@ -1142,7 +1333,6 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
             if not auction or auction.get('finished'):
                 return
             if datetime.fromisoformat(auction['last_bid_time']) > snapshot_time:
-                logger.info(f"Аукцион {auction_id}: новая ставка после '2', сброс")
                 continue
 
             # Пишем "1" в комментариях
@@ -1150,11 +1340,11 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
             logger.info(f"Аукцион {auction_id}: отсчёт 1")
             await asyncio.sleep(30)
 
+            # Финальная проверка
             auction = config.active_auctions.get(auction_id)
             if not auction or auction.get('finished'):
                 return
             if datetime.fromisoformat(auction['last_bid_time']) > snapshot_time:
-                logger.info(f"Аукцион {auction_id}: новая ставка после '1', сброс")
                 continue
 
             # === ОБЪЯВЛЕНИЕ ПОБЕДИТЕЛЯ ПОСТОМ В КАНАЛЕ ===
@@ -1179,22 +1369,17 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
                             )
                         )
                     except Exception as e:
-                        logger.error(f"Ошибка сообщения о нехватке средств: {e}")
+                        logger.error(f"Ошибка сообщения о нехватке: {e}")
                 else:
                     db.deduct_balance(winner_id, bot_id, winner_amount)
-
                     try:
                         await bot_instance.send_message(
                             chat_id=bot_cfg.takes_channel,
                             text=f"Победитель: {winner_display}"
                         )
-                        logger.info(
-                            f"Аукцион {auction_id}: победитель {winner_display}, "
-                            f"списано {winner_amount} {bot_cfg.currency_emoji}"
-                        )
+                        logger.info(f"Аукцион {auction_id}: победитель {winner_display}")
                     except Exception as e:
                         logger.error(f"Ошибка объявления победителя: {e}")
-
                     try:
                         await bot_instance.send_message(
                             winner_id,
@@ -1273,33 +1458,37 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         await callback.message.edit_text("Выберите действие:", reply_markup=build_main_menu(bot_id))
         await callback.answer()
 
-    # =================== БАЛАНС ===================
-
     @router.callback_query(F.data == "balance")
     async def callback_balance(callback: types.CallbackQuery):
         cfg = config.bots.get(bot_id)
         user_data = db.get_bot_data(callback.from_user.id, bot_id)
+
         status_text = ""
         if user_data.get('is_frozen'):
             status_text += "❄️ Счёт заморожен\n"
         if user_data.get('is_blocked'):
             status_text += "🚫 Заблокирован для тейков\n"
+        if user_data.get('is_announcement_blocked'):
+            status_text += "🚫 Заблокирован для объявлений\n"
+
         main_balance = db.get_balance(callback.from_user.id, bot_id)
         main_bal_str = "∞" if main_balance == float('inf') else f"{main_balance:.0f}"
+
         text = f"{status_text}💳 Балансы:\n\n"
         text += f"▸ {cfg.currency_name} {cfg.currency_emoji}: {main_bal_str} (текущий)\n"
+
         for other_bot_id, other_cfg in config.bots.items():
             if other_bot_id != bot_id:
                 other_balance = db.get_balance(callback.from_user.id, other_bot_id)
                 if other_balance > 0 or other_balance == float('inf'):
                     other_str = "∞" if other_balance == float('inf') else f"{other_balance:.0f}"
                     text += f"▸ {other_cfg.currency_name} {other_cfg.currency_emoji}: {other_str}\n"
-        can_take, cooldown_msg = can_send_take(callback.from_user.id, bot_id)
-        text += f"\n📝 Тейки: {'✅ доступно' if can_take else f'⏳ {cooldown_msg}'}"
+
+        can_take, remaining_takes, cooldown_msg = can_send_take(callback.from_user.id, bot_id)
+        text += f"\n📝 {cooldown_msg}"
+
         await callback.message.edit_text(text, reply_markup=build_main_menu(bot_id))
         await callback.answer()
-
-    # =================== ТОП ===================
 
     @router.callback_query(F.data == "top")
     async def callback_top(callback: types.CallbackQuery):
@@ -1318,8 +1507,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             text += "Пока пусто"
         await callback.message.edit_text(text, reply_markup=build_main_menu(bot_id))
         await callback.answer()
-
-    # =================== ПЕРЕВОДЫ ===================
 
     @router.callback_query(F.data == "transfer")
     async def callback_transfer(callback: types.CallbackQuery, state: FSMContext):
@@ -1386,8 +1573,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         else:
             await message.answer(f"❌ {error}", reply_markup=build_main_menu(bot_id))
         await state.clear()
-
-    # =================== КУРСЫ / КОНВЕРТАЦИЯ ===================
 
     @router.callback_query(F.data == "rates")
     async def callback_rates(callback: types.CallbackQuery):
@@ -1465,8 +1650,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         else:
             await message.answer(f"❌ {error}", reply_markup=build_main_menu(bot_id))
         await state.clear()
-
-    # =================== ЗАРАБОТОК / ВИКТОРИНА ===================
 
     @router.callback_query(F.data == "earn")
     async def callback_earn(callback: types.CallbackQuery):
@@ -1547,18 +1730,14 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     async def callback_post_announcement(callback: types.CallbackQuery, state: FSMContext):
         """Кнопка выложить объявление."""
         cfg = config.bots.get(bot_id)
-
-        logger.info(f"Попытка объявления: bot_id={bot_id}, announcement_channel='{cfg.announcement_channel if cfg else 'cfg=None'}'")
-
+        logger.info(f"Объявление: bot_id={bot_id}, channel='{cfg.announcement_channel if cfg else 'None'}'")
         if not cfg or not cfg.announcement_channel:
-            await callback.answer(
-                "Канал для объявлений не настроен. Обратитесь к администратору.",
-                show_alert=True
-            )
+            await callback.answer("Канал для объявлений не настроен.", show_alert=True)
             return
-
         await callback.message.edit_text(
-            "📢 Отправьте ваше объявление",
+            "📢 Отправьте ваше объявление.\n\n"
+            "Можно отправить текст, фото, видео или любой другой контент.\n"
+            "Все эмодзи (включая премиум) и медиафайлы будут сохранены.",
             reply_markup=build_cancel_keyboard()
         )
         await state.set_state(AnnouncementStates.WaitingAnnouncement)
@@ -1566,40 +1745,191 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
     @router.message(AnnouncementStates.WaitingAnnouncement)
     async def process_announcement(message: types.Message, state: FSMContext):
-        """Обработка и отправка объявления через copy_message (сохраняет премиум эмодзи)."""
+        """
+        Обработка объявления.
+        Блокировка объявлений (is_announcement_blocked) независима от блокировки тейков (is_blocked).
+        Если есть модераторы объявлений — отправляем на проверку.
+        Если нет — публикуем сразу.
+        """
         cfg = config.bots.get(bot_id)
         if not cfg or not cfg.announcement_channel:
+            await message.answer("Канал не настроен.", reply_markup=build_main_menu(bot_id))
+            await state.clear()
+            return
+
+        # Проверяем блокировку именно для объявлений (независимо от тейков)
+        if check_announcement_blocked(message.from_user.id, bot_id):
             await message.answer(
-                "Канал для объявлений не настроен.",
+                "🚫 Вы заблокированы для отправки объявлений.",
                 reply_markup=build_main_menu(bot_id)
             )
             await state.clear()
             return
 
-        try:
-            # copy_message сохраняет ВСЁ: премиум эмодзи, форматирование, медиа
-            await bot_instance.copy_message(
-                chat_id=cfg.announcement_channel,
-                from_chat_id=message.chat.id,
-                message_id=message.message_id
-            )
-            await message.answer(
-                "✅ Ваше объявление опубликовано!",
-                reply_markup=build_main_menu(bot_id)
-            )
-            logger.info(
-                f"Объявление от {message.from_user.id} "
-                f"отправлено в {cfg.announcement_channel}"
-            )
-        except Exception as e:
-            logger.error(f"Ошибка отправки объявления: {e}")
-            await message.answer(
-                f"❌ Ошибка при отправке объявления: {e}\n"
-                f"Убедитесь что бот является администратором канала.",
-                reply_markup=build_main_menu(bot_id)
-            )
+        # Собираем модераторов объявлений
+        all_users = db.get_all_users_for_bot(bot_id)
+        announcement_mods = []
+        for user in all_users:
+            ud = db.get_bot_data(user['user_id'], bot_id)
+            if ud.get('is_announcement_mod') and not check_admin(user['user_id'], bot_id):
+                announcement_mods.append(user['user_id'])
+        # Добавляем администраторов
+        for user in all_users:
+            if check_admin(user['user_id'], bot_id) and user['user_id'] not in announcement_mods:
+                announcement_mods.append(user['user_id'])
+
+        if announcement_mods:
+            # Есть модераторы — отправляем на проверку
+            ann_id = str(uuid.uuid4())[:8]
+            ann_key = f"ann_{ann_id}"
+            config.pending_takes[ann_key] = {
+                'user_id': message.from_user.id,
+                'bot_id': bot_id,
+                'chat_id': message.chat.id,
+                'message_id': message.message_id,
+                'type': 'announcement'
+            }
+            config.save()
+
+            # Выбираем клавиатуру в зависимости от статуса блокировки в объявлениях
+            is_ann_blocked = check_announcement_blocked(message.from_user.id, bot_id)
+
+            for mod_uid in announcement_mods:
+                try:
+                    if is_ann_blocked:
+                        mod_kb = build_announcement_moderation_keyboard_blocked(ann_id, message.from_user.id)
+                    else:
+                        mod_kb = build_announcement_moderation_keyboard(ann_id, message.from_user.id)
+                    await bot_instance.send_message(
+                        mod_uid,
+                        f"📢 Новое объявление на проверке",
+                        reply_markup=mod_kb
+                    )
+                    await message.copy_to(mod_uid)
+                except Exception as e:
+                    logger.error(f"Ошибка отправки модератору объявлений {mod_uid}: {e}")
+
+            await message.answer("📝 Объявление отправлено на модерацию.", reply_markup=build_main_menu(bot_id))
+        else:
+            # Нет модераторов — публикуем сразу через copy_message (сохраняет премиум эмодзи)
+            try:
+                await bot_instance.copy_message(
+                    chat_id=cfg.announcement_channel,
+                    from_chat_id=message.chat.id,
+                    message_id=message.message_id
+                )
+                await message.answer("✅ Ваше объявление опубликовано!", reply_markup=build_main_menu(bot_id))
+                logger.info(f"Объявление от {message.from_user.id} в {cfg.announcement_channel}")
+            except Exception as e:
+                logger.error(f"Ошибка отправки объявления: {e}")
+                await message.answer(
+                    f"❌ Ошибка при отправке объявления: {e}\n"
+                    f"Убедитесь что бот является администратором канала.",
+                    reply_markup=build_main_menu(bot_id)
+                )
 
         await state.clear()
+
+    @router.callback_query(F.data.startswith("ann_approve_"))
+    async def announcement_approve(callback: types.CallbackQuery):
+        """Одобрение объявления модератором."""
+        ann_id = callback.data[12:]
+        ann_key = f"ann_{ann_id}"
+        ann_data = config.pending_takes.get(ann_key)
+        if not ann_data:
+            await callback.answer("Объявление не найдено", show_alert=True)
+            return
+        cfg = config.bots.get(bot_id)
+        try:
+            await bot_instance.copy_message(
+                chat_id=cfg.announcement_channel,
+                from_chat_id=ann_data['chat_id'],
+                message_id=ann_data['message_id']
+            )
+            del config.pending_takes[ann_key]
+            config.save()
+            await callback.message.edit_text("✅ Объявление одобрено и опубликовано.")
+            try:
+                await bot_instance.send_message(ann_data['user_id'], "✅ Ваше объявление одобрено и опубликовано!")
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"Ошибка одобрения объявления: {e}")
+            await callback.answer(f"Ошибка: {e}", show_alert=True)
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("ann_reject_"))
+    async def announcement_reject(callback: types.CallbackQuery):
+        """Отклонение объявления модератором."""
+        ann_id = callback.data[11:]
+        ann_key = f"ann_{ann_id}"
+        ann_data = config.pending_takes.get(ann_key)
+        if ann_data:
+            try:
+                await bot_instance.send_message(ann_data['user_id'], "❌ Ваше объявление отклонено модератором.")
+            except Exception:
+                pass
+            del config.pending_takes[ann_key]
+            config.save()
+        await callback.message.edit_text("❌ Объявление отклонено.")
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("ann_block_"))
+    async def announcement_block_user(callback: types.CallbackQuery):
+        """
+        Блокировка пользователя для объявлений.
+        Независима от блокировки тейков — пользователь может быть заблокирован
+        только для объявлений, но не для тейков, и наоборот.
+        После блокировки кнопка меняется на 'Разблокировать (объявления)'.
+        """
+        if not check_announcement_moderator(callback.from_user.id, bot_id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        # Формат callback_data: ann_block_{uid}_{ann_id}
+        parts = callback.data[10:].split("_", 1)
+        uid = int(parts[0])
+        ann_id = parts[1] if len(parts) > 1 else ""
+        db.set_bot_data(uid, bot_id, is_announcement_blocked=1)
+        try:
+            await bot_instance.send_message(uid, "🚫 Вы заблокированы для отправки объявлений.")
+        except Exception:
+            pass
+        # Обновляем кнопки — показываем кнопку разблокировки
+        try:
+            await callback.message.edit_reply_markup(
+                reply_markup=build_announcement_moderation_keyboard_blocked(ann_id, uid)
+            )
+        except Exception:
+            pass
+        await callback.answer("🚫 Заблокирован для объявлений", show_alert=True)
+
+    @router.callback_query(F.data.startswith("ann_unblock_"))
+    async def announcement_unblock_user(callback: types.CallbackQuery):
+        """
+        Разблокировка пользователя для объявлений.
+        Независима от разблокировки тейков.
+        После разблокировки кнопка меняется на 'Заблокировать (объявления)'.
+        """
+        if not check_announcement_moderator(callback.from_user.id, bot_id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        # Формат callback_data: ann_unblock_{uid}_{ann_id}
+        parts = callback.data[12:].split("_", 1)
+        uid = int(parts[0])
+        ann_id = parts[1] if len(parts) > 1 else ""
+        db.set_bot_data(uid, bot_id, is_announcement_blocked=0)
+        try:
+            await bot_instance.send_message(uid, "✅ Вы разблокированы для объявлений.")
+        except Exception:
+            pass
+        # Обновляем кнопки — показываем кнопку блокировки
+        try:
+            await callback.message.edit_reply_markup(
+                reply_markup=build_announcement_moderation_keyboard(ann_id, uid)
+            )
+        except Exception:
+            pass
+        await callback.answer("✅ Разблокирован для объявлений", show_alert=True)
 
     # =================== ТЕЙКИ ===================
 
@@ -1612,11 +1942,12 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             cfg = config.bots.get(bid)
             user_data = db.get_bot_data(uid, bid)
 
+            # Блокировка тейков независима от блокировки объявлений
             if user_data.get('is_blocked'):
                 await message.answer("🚫 Вы заблокированы для отправки тейков.")
                 return False
 
-            can_take, cooldown_msg = can_send_take(uid, bid)
+            can_take, remaining_takes, cooldown_msg = can_send_take(uid, bid)
             if not can_take:
                 await message.answer(f"⏳ {cooldown_msg}")
                 return False
@@ -1673,16 +2004,21 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 }
                 config.save()
 
+                is_blocked_flag = bool(db.get_bot_data(uid, bid).get('is_blocked', 0))
                 all_users = db.get_all_users_for_bot(bid)
                 for user in all_users:
                     mod_uid = user['user_id']
                     if check_moderator(mod_uid, bid):
                         try:
-                            is_blocked = db.get_bot_data(uid, bid).get('is_blocked', 0)
+                            # Выбираем клавиатуру в зависимости от статуса блокировки в тейках
+                            if is_blocked_flag:
+                                mod_kb = build_take_moderation_keyboard_blocked(take_id, uid)
+                            else:
+                                mod_kb = build_take_moderation_keyboard(take_id, uid, False)
                             await bot.send_message(
                                 mod_uid,
                                 f"⚠️ Тейк на модерации\nПричина: {moderation_reason}\n\n{text}",
-                                reply_markup=build_take_moderation_keyboard(take_id, uid, bool(is_blocked))
+                                reply_markup=mod_kb
                             )
                             await message.copy_to(mod_uid)
                         except Exception as e:
@@ -1691,10 +2027,39 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 await message.answer("📝 Тейк отправлен на модерацию.", reply_markup=build_main_menu(bid))
                 return True
             else:
+                # Тейк публикуется напрямую в канал
                 sent = await forward_take_to_channel(message, bid, bot)
                 if sent:
                     db.add_take_timestamp(uid, bid)
-                    await message.answer("✅ Тейк отправлен в канал!", reply_markup=build_main_menu(bid))
+                    _, new_remaining, new_msg = can_send_take(uid, bid)
+                    await message.answer(
+                        f"✅ Тейк отправлен в канал!\n📝 {new_msg}",
+                        reply_markup=build_main_menu(bid)
+                    )
+
+                    # Отправляем всем модераторам с кнопкой удаления
+                    channel_msg_id = sent.message_id
+                    is_blocked_flag = bool(db.get_bot_data(uid, bid).get('is_blocked', 0))
+
+                    all_users = db.get_all_users_for_bot(bid)
+                    for user in all_users:
+                        mod_uid = user['user_id']
+                        if check_moderator(mod_uid, bid):
+                            try:
+                                # Выбираем клавиатуру в зависимости от статуса блокировки в тейках
+                                if is_blocked_flag:
+                                    published_kb = build_published_take_keyboard_blocked(channel_msg_id, uid)
+                                else:
+                                    published_kb = build_published_take_keyboard(channel_msg_id, uid, False)
+                                await bot.send_message(
+                                    mod_uid,
+                                    f"📝 Тейк опубликован в канале",
+                                    reply_markup=published_kb
+                                )
+                                await message.copy_to(mod_uid)
+                            except Exception as e:
+                                logger.error(f"Ошибка отправки модератору {mod_uid}: {e}")
+
                     return True
                 else:
                     await message.answer("❌ Ошибка при отправке тейка.", reply_markup=build_main_menu(bid))
@@ -1704,9 +2069,9 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         async def callback_send_take(callback: types.CallbackQuery, state: FSMContext):
             user_data = db.get_bot_data(callback.from_user.id, bot_id)
             if user_data.get('is_blocked'):
-                await callback.answer("🚫 Вы заблокированы", show_alert=True)
+                await callback.answer("🚫 Вы заблокированы для тейков", show_alert=True)
                 return
-            can_take, cooldown_msg = can_send_take(callback.from_user.id, bot_id)
+            can_take, remaining_takes, cooldown_msg = can_send_take(callback.from_user.id, bot_id)
             if not can_take:
                 await callback.answer(f"⏳ {cooldown_msg}", show_alert=True)
                 return
@@ -1714,7 +2079,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             pause_text = " ⏸ (на паузе — будет отправлен позже)" if cfg.takes_paused else ""
             await callback.message.edit_text(
                 f"📝 Отправьте тейк с хештегом #тейк{pause_text}\n"
-                f"⏱ Кулдаун: {cfg.take_cooldown_minutes} мин",
+                f"⏱ {cooldown_msg}",
                 reply_markup=build_cancel_keyboard()
             )
             await state.set_state(TakeStates.WaitingTake)
@@ -1731,14 +2096,12 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
         @router.message(F.text.contains("#тейк") | F.caption.contains("#тейк"))
         async def auto_forward_take(message: types.Message, state: FSMContext):
-            # ИСПРАВЛЕНИЕ 1: Игнорируем посты из каналов и групп — только личные чаты
+            # Игнорируем посты из каналов и групп — только личные чаты
             if message.chat.type in ("channel", "group", "supergroup"):
                 return
-
             current_state = await state.get_state()
             if current_state == TakeStates.WaitingTake:
                 return
-
             await process_take_message(message, bot_id, bot_instance)
 
         @router.callback_query(F.data.startswith("take_approve_"))
@@ -1803,31 +2166,114 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await callback.message.edit_text("❌ Тейк отклонён.")
             await callback.answer()
 
+        @router.callback_query(F.data.startswith("take_delete_"))
+        async def take_delete_from_channel(callback: types.CallbackQuery):
+            """Удаление уже опубликованного тейка из канала."""
+            if not check_moderator(callback.from_user.id, bot_id):
+                await callback.answer("Нет доступа", show_alert=True)
+                return
+            channel_msg_id = int(callback.data[12:])
+            cfg = config.bots.get(bot_id)
+            try:
+                await bot_instance.delete_message(cfg.takes_channel, channel_msg_id)
+                await callback.message.edit_text("✅ Тейк удалён из канала.")
+                logger.info(f"Тейк {channel_msg_id} удалён модератором {callback.from_user.id}")
+            except Exception as e:
+                logger.error(f"Ошибка удаления тейка: {e}")
+                await callback.answer(f"Ошибка удаления: {e}", show_alert=True)
+            await callback.answer()
+
         @router.callback_query(F.data.startswith("user_block_"))
-        async def block_user_callback(callback: types.CallbackQuery):
+        async def block_user_from_takes(callback: types.CallbackQuery):
+            """
+            Блокировка пользователя для тейков.
+            Независима от блокировки объявлений.
+            После блокировки кнопка меняется на 'Разблокировать (тейки)'.
+            """
             if not check_moderator(callback.from_user.id, bot_id):
                 await callback.answer("Нет доступа", show_alert=True)
                 return
             uid = int(callback.data[11:])
             db.set_bot_data(uid, bot_id, is_blocked=1)
             try:
-                await bot_instance.send_message(uid, "🚫 Вы заблокированы для тейков.")
+                await bot_instance.send_message(uid, "🚫 Вы заблокированы для отправки тейков.")
             except Exception:
                 pass
-            await callback.answer("🚫 Пользователь заблокирован", show_alert=True)
+            # Обновляем кнопки — показываем кнопку разблокировки
+            try:
+                await callback.message.edit_reply_markup(
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(
+                            text="🔓 Разблокировать (тейки)",
+                            callback_data=f"take_unblock_{uid}"
+                        )]
+                    ])
+                )
+            except Exception:
+                pass
+            await callback.answer("🚫 Заблокирован для тейков", show_alert=True)
 
-        @router.callback_query(F.data.startswith("user_unblock_"))
-        async def unblock_user_callback(callback: types.CallbackQuery):
+        @router.callback_query(F.data.startswith("take_unblock_"))
+        async def unblock_user_from_takes(callback: types.CallbackQuery):
+            """
+            Разблокировка пользователя для тейков.
+            Независима от разблокировки объявлений.
+            После разблокировки кнопка меняется на 'Заблокировать (тейки)'.
+            """
             if not check_moderator(callback.from_user.id, bot_id):
                 await callback.answer("Нет доступа", show_alert=True)
                 return
             uid = int(callback.data[13:])
             db.set_bot_data(uid, bot_id, is_blocked=0)
             try:
-                await bot_instance.send_message(uid, "✅ Вы разблокированы.")
+                await bot_instance.send_message(uid, "✅ Вы разблокированы для тейков.")
             except Exception:
                 pass
-            await callback.answer("✅ Разблокирован", show_alert=True)
+            # Обновляем кнопки — показываем кнопку блокировки
+            try:
+                await callback.message.edit_reply_markup(
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(
+                            text="🚫 Заблокировать (тейки)",
+                            callback_data=f"user_block_{uid}"
+                        )]
+                    ])
+                )
+            except Exception:
+                pass
+            await callback.answer("✅ Разблокирован для тейков", show_alert=True)
+
+        @router.callback_query(F.data.startswith("user_unblock_"))
+        async def unblock_user_legacy(callback: types.CallbackQuery):
+            """Разблокировка тейков — устаревший формат для обратной совместимости."""
+            if not check_moderator(callback.from_user.id, bot_id):
+                await callback.answer("Нет доступа", show_alert=True)
+                return
+            uid = int(callback.data[13:])
+            db.set_bot_data(uid, bot_id, is_blocked=0)
+            try:
+                await bot_instance.send_message(uid, "✅ Вы разблокированы для тейков.")
+            except Exception:
+                pass
+            try:
+                await callback.message.edit_reply_markup(
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(
+                            text="🚫 Заблокировать (тейки)",
+                            callback_data=f"user_block_{uid}"
+                        )]
+                    ])
+                )
+            except Exception:
+                pass
+            await callback.answer("✅ Разблокирован для тейков", show_alert=True)
+
+    dp.include_router(router)
+
+def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
+    """Обработчики магазина, пиара, админ-панели и канала."""
+    router = Router()
+    bot_config = config.bots.get(bot_id)
 
     # =================== МАГАЗИН / ПИАР ===================
 
@@ -1843,7 +2289,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             F.text.contains("#обмен") | F.caption.contains("#обмен")
         )
         async def auto_forward_shop(message: types.Message, state: FSMContext):
-            # ИСПРАВЛЕНИЕ 2: Игнорируем каналы и группы
+            # Только личные чаты — не каналы и не группы
             if message.chat.type in ("channel", "group", "supergroup"):
                 return
             current_state = await state.get_state()
@@ -1875,7 +2321,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 post_data = data.get('post_data', {})
                 try:
                     sent_message = None
-
                     if post_data.get('is_forwarded'):
                         sent_message = await bot_instance.copy_message(
                             chat_id=cfg.takes_channel,
@@ -1921,7 +2366,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     ))
 
                     db.set_bot_data(callback.from_user.id, bot_id, last_promo_at=datetime.now().isoformat())
-
                     pin_text = "📌 Закреплён и " if is_pinned else ""
                     await callback.message.edit_text(
                         f"✅ Пиар размещён на {hours}ч!\n{pin_text}будет удалён автоматически.",
@@ -2039,6 +2483,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             except ValueError:
                 await message.answer("Введите корректную сумму.", reply_markup=build_cancel_keyboard())
                 return
+
             data = await state.get_data()
             purchase_id = str(uuid.uuid4())[:8]
             buyer = db.get_user(message.from_user.id)
@@ -2125,9 +2570,12 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             user_bot_data = db.get_bot_data(user['user_id'], bot_id)
             flags = ""
             if user_bot_data.get('is_frozen'): flags += "❄️"
-            if user_bot_data.get('is_blocked'): flags += "🚫"
+            if user_bot_data.get('is_blocked'): flags += "🚫т"
+            if user_bot_data.get('is_announcement_blocked'): flags += "🚫о"
             if user_bot_data.get('is_moderator'): flags += "👮"
+            if user_bot_data.get('is_announcement_mod'): flags += "📢"
             text += f"@{user['username']}: {balance_str} {cfg.currency_emoji} {flags}\n"
+        text += "\n🚫т — заблок.тейки, 🚫о — заблок.объявления"
         await callback.message.edit_text(text, reply_markup=build_admin_menu(callback.from_user.id, bot_id))
         await callback.answer()
 
@@ -2336,6 +2784,8 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await message.answer(f"❌ Ошибка: {e}", reply_markup=build_admin_menu(message.from_user.id, bot_id))
         await state.clear()
 
+    # =================== ЦЕНЗУРА ===================
+
     @router.callback_query(F.data == "adm_censor")
     async def admin_censor_menu(callback: types.CallbackQuery):
         if not check_admin(callback.from_user.id, bot_id):
@@ -2390,7 +2840,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
     @router.callback_query(F.data == "marker_add")
     async def marker_add_start(callback: types.CallbackQuery, state: FSMContext):
-        await callback.message.edit_text("Введите маркер (тейки с ним → модерация):", reply_markup=build_cancel_keyboard())
+        await callback.message.edit_text("Введите маркер:", reply_markup=build_cancel_keyboard())
         await state.set_state(AdminStates.WaitingMarkerWord)
         await callback.answer()
 
@@ -2442,17 +2892,19 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         )
         await callback.answer()
 
+    # =================== МОДЕРАТОРЫ ТЕЙКОВ ===================
+
     @router.callback_query(F.data == "adm_mods")
     async def admin_mods_menu(callback: types.CallbackQuery):
         if not check_admin(callback.from_user.id, bot_id):
             await callback.answer("Нет доступа", show_alert=True)
             return
-        await callback.message.edit_text("👮 Управление модераторами:", reply_markup=build_mods_menu())
+        await callback.message.edit_text("👮 Управление модераторами тейков:", reply_markup=build_mods_menu())
         await callback.answer()
 
     @router.callback_query(F.data == "mod_assign")
     async def mod_assign_start(callback: types.CallbackQuery, state: FSMContext):
-        await callback.message.edit_text("Введите username модератора:", reply_markup=build_cancel_keyboard())
+        await callback.message.edit_text("Введите username модератора тейков:", reply_markup=build_cancel_keyboard())
         await state.set_state(AdminStates.WaitingModeratorUsername)
         await callback.answer()
 
@@ -2461,7 +2913,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         uid = db.find_user_by_input(message.text)
         if uid:
             db.set_bot_data(uid, bot_id, is_moderator=1)
-            await message.answer("✅ Назначен модератором.", reply_markup=build_mods_menu())
+            await message.answer("✅ Назначен модератором тейков.", reply_markup=build_mods_menu())
         else:
             await message.answer("Пользователь не найден.", reply_markup=build_cancel_keyboard())
         await state.clear()
@@ -2477,7 +2929,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         uid = db.find_user_by_input(message.text)
         if uid:
             db.set_bot_data(uid, bot_id, is_moderator=0)
-            await message.answer("✅ Снят с модераторов.", reply_markup=build_mods_menu())
+            await message.answer("✅ Снят с модераторов тейков.", reply_markup=build_mods_menu())
         else:
             await message.answer("Пользователь не найден.", reply_markup=build_cancel_keyboard())
         await state.clear()
@@ -2492,9 +2944,80 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 user_info = db.get_user(user['user_id'])
                 if user_info:
                     moderators.append(f"@{user_info['username']}")
-        text = ", ".join(moderators) if moderators else "(нет модераторов)"
-        await callback.message.edit_text(f"👮 Модераторы: {text}", reply_markup=build_mods_menu())
+        text = ", ".join(moderators) if moderators else "(нет модераторов тейков)"
+        await callback.message.edit_text(f"👮 Модераторы тейков: {text}", reply_markup=build_mods_menu())
         await callback.answer()
+
+    # =================== МОДЕРАТОРЫ ОБЪЯВЛЕНИЙ ===================
+
+    @router.callback_query(F.data == "adm_announcement_mods")
+    async def admin_announcement_mods_menu(callback: types.CallbackQuery):
+        if not check_admin(callback.from_user.id, bot_id):
+            await callback.answer("Нет доступа", show_alert=True)
+            return
+        await callback.message.edit_text(
+            "📢 Управление модераторами объявлений:",
+            reply_markup=build_announcement_mods_menu()
+        )
+        await callback.answer()
+
+    @router.callback_query(F.data == "ann_mod_assign")
+    async def announcement_mod_assign_start(callback: types.CallbackQuery, state: FSMContext):
+        await callback.message.edit_text(
+            "Введите username модератора объявлений:",
+            reply_markup=build_cancel_keyboard()
+        )
+        await state.set_state(AdminStates.WaitingAnnouncementModUsername)
+        await callback.answer()
+
+    @router.message(AdminStates.WaitingAnnouncementModUsername)
+    async def announcement_mod_assign_process(message: types.Message, state: FSMContext):
+        uid = db.find_user_by_input(message.text)
+        if uid:
+            db.set_bot_data(uid, bot_id, is_announcement_mod=1)
+            await message.answer(
+                "✅ Назначен модератором объявлений.\n"
+                "Теперь все объявления будут приходить ему на проверку.",
+                reply_markup=build_announcement_mods_menu()
+            )
+        else:
+            await message.answer("Пользователь не найден.", reply_markup=build_cancel_keyboard())
+        await state.clear()
+
+    @router.callback_query(F.data == "ann_mod_remove")
+    async def announcement_mod_remove_start(callback: types.CallbackQuery, state: FSMContext):
+        await callback.message.edit_text("Введите username для снятия:", reply_markup=build_cancel_keyboard())
+        await state.set_state(AdminStates.WaitingRemoveAnnouncementModUsername)
+        await callback.answer()
+
+    @router.message(AdminStates.WaitingRemoveAnnouncementModUsername)
+    async def announcement_mod_remove_process(message: types.Message, state: FSMContext):
+        uid = db.find_user_by_input(message.text)
+        if uid:
+            db.set_bot_data(uid, bot_id, is_announcement_mod=0)
+            await message.answer("✅ Снят с модераторов объявлений.", reply_markup=build_announcement_mods_menu())
+        else:
+            await message.answer("Пользователь не найден.", reply_markup=build_cancel_keyboard())
+        await state.clear()
+
+    @router.callback_query(F.data == "ann_mod_list")
+    async def announcement_mod_list_show(callback: types.CallbackQuery):
+        users_list = db.get_all_users_for_bot(bot_id)
+        ann_mods = []
+        for user in users_list:
+            user_bot_data = db.get_bot_data(user['user_id'], bot_id)
+            if user_bot_data.get('is_announcement_mod'):
+                user_info = db.get_user(user['user_id'])
+                if user_info:
+                    ann_mods.append(f"@{user_info['username']}")
+        text = ", ".join(ann_mods) if ann_mods else "(нет модераторов объявлений)"
+        await callback.message.edit_text(
+            f"📢 Модераторы объявлений: {text}",
+            reply_markup=build_announcement_mods_menu()
+        )
+        await callback.answer()
+
+    # =================== СПЕЦКНОПКИ ГЛАВНОГО АДМИНА ===================
 
     if bot_id == "main":
         @router.callback_query(F.data == "adm_reset_rates")
@@ -2538,10 +3061,8 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         cfg = config.bots.get(bot_id)
         if not cfg:
             return
-
         if "#аукцион" in message.text.lower():
             auction_id = str(message.message_id)
-
             discussion_chat_id = None
             try:
                 channel_info = await bot_instance.get_chat(message.chat.id)
@@ -2565,7 +3086,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             }
             config.save()
             logger.info(f"Аукцион создан: {auction_id}")
-
             task = asyncio.create_task(run_auction_timer(bot_instance, bot_id, auction_id))
             config.auction_tasks[auction_id] = task
 
@@ -2573,29 +3093,22 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     async def handle_forwarded_post(message: types.Message):
         """
         Ловим пересланные посты из канала в группу комментариев.
-        ИСПРАВЛЕНИЕ 3: Только для групп — не для личных чатов и каналов.
+        Только для групп — не для личных чатов и каналов.
         """
-        # Только группы — не каналы и не личные чаты
         if message.chat.type not in ("group", "supergroup"):
             return
-
         if not message.forward_from_chat:
             return
-
         forward_msg_id = message.forward_from_message_id
         if not forward_msg_id:
             return
-
         auction_id = str(forward_msg_id)
         auction = config.active_auctions.get(auction_id)
-
         if auction and not auction.get('discussion_message_id'):
             auction['discussion_message_id'] = message.message_id
             auction['discussion_chat_id'] = message.chat.id
             config.save()
-            logger.info(
-                f"Аукцион {auction_id}: ID в группе комментариев = {message.message_id}"
-            )
+            logger.info(f"Аукцион {auction_id}: ID в группе = {message.message_id}")
 
     @router.message(F.reply_to_message)
     async def handle_comment_reply(message: types.Message):
@@ -2604,7 +3117,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             return
         if not message.reply_to_message:
             return
-
         cfg = config.bots.get(bot_id)
         if not cfg:
             return
@@ -2614,7 +3126,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             original_msg_id = str(message.reply_to_message.forward_from_message_id)
         elif message.reply_to_message.message_id:
             original_msg_id = str(message.reply_to_message.message_id)
-
         if not original_msg_id:
             return
 
@@ -2633,12 +3144,10 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 register_user(message.from_user, bot_id)
                 db.add_balance(user_id, bot_id, reward)
                 try:
-                    await message.reply(
-                        f"✅ Правильный ответ, {user_name}!\n+{reward} {cfg.currency_emoji}"
-                    )
+                    await message.reply(f"✅ Правильный ответ, {user_name}!\n+{reward} {cfg.currency_emoji}")
                 except Exception as e:
                     logger.error(f"Ошибка ответа викторины: {e}")
-                logger.info(f"Викторина {original_msg_id} решена пользователем {user_id}")
+                logger.info(f"Викторина {original_msg_id} решена {user_id}")
                 if original_msg_id in config.active_quizzes:
                     del config.active_quizzes[original_msg_id]
                     config.save()
@@ -2648,7 +3157,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         if not auction or auction.get('bot_id') != bot_id or auction.get('finished'):
             return
 
-        # Пас / лив
+        # Пас / лив — откат к предыдущей ставке
         if PASS_PATTERN.match(comment_text.strip()):
             bid_history = auction.get('bid_history', [])
             if len(bid_history) < 2:
@@ -2657,7 +3166,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 except Exception:
                     pass
                 return
-
             bid_history.pop()
             prev_bid = bid_history[-1]
             auction['current_bidder'] = prev_bid['bidder']
@@ -2665,7 +3173,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             auction['last_bid_time'] = datetime.now().isoformat()
             auction['bid_history'] = bid_history
             config.save()
-
             prev_display = prev_bid.get('display', 'Неизвестный')
             try:
                 await message.reply(
@@ -2674,16 +3181,14 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 )
             except Exception as e:
                 logger.error(f"Ошибка ответа пас/лив: {e}")
-
             old_task = config.auction_tasks.get(original_msg_id)
             if old_task and not old_task.done():
                 old_task.cancel()
             task = asyncio.create_task(run_auction_timer(bot_instance, bot_id, original_msg_id))
             config.auction_tasks[original_msg_id] = task
-            logger.info(f"Аукцион {original_msg_id}: пас/лив, откат к {prev_bid['amount']}")
             return
 
-        # Ставка
+        # Проверяем ставку
         bet_match = BET_PATTERN.search(comment_text)
         if not bet_match:
             return
@@ -2695,29 +3200,21 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
         if bet_amount <= current_bid:
             try:
-                await message.reply(
-                    f"Ошибка: ставка равна или меньше предыдущей ({current_bid} {cfg.currency_emoji})"
-                )
+                await message.reply(f"Ошибка: ставка равна или меньше предыдущей ({current_bid} {cfg.currency_emoji})")
             except Exception:
                 pass
             return
 
         if bet_amount - current_bid < MIN_BID_INCREMENT:
             try:
-                await message.reply(
-                    f"Ошибка: недостаточное повышение ставки "
-                    f"(минимум +{MIN_BID_INCREMENT} {cfg.currency_emoji})"
-                )
+                await message.reply(f"Ошибка: недостаточное повышение (минимум +{MIN_BID_INCREMENT} {cfg.currency_emoji})")
             except Exception:
                 pass
             return
 
         if user_balance != float('inf') and user_balance < bet_amount:
             try:
-                await message.reply(
-                    f"У вас недостаточно средств.\n"
-                    f"Ваш баланс: {user_balance:.0f} {cfg.currency_emoji}"
-                )
+                await message.reply(f"У вас недостаточно средств.\nБаланс: {user_balance:.0f} {cfg.currency_emoji}")
             except Exception as e:
                 logger.error(f"Ошибка ответа аукциона: {e}")
             return
@@ -2730,14 +3227,12 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
         if 'bid_history' not in auction:
             auction['bid_history'] = []
-
         auction['bid_history'].append({
             'bidder': user_id,
             'amount': bet_amount,
             'display': display_name,
             'time': datetime.now().isoformat()
         })
-
         auction['current_bidder'] = user_id
         auction['current_bid'] = bet_amount
         auction['last_bid_time'] = datetime.now().isoformat()
@@ -2748,17 +3243,13 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         except Exception as e:
             logger.error(f"Ошибка подтверждения ставки: {e}")
 
-        logger.info(f"Аукцион {original_msg_id}: ставка {bet_amount} от {display_name}")
-
         old_task = config.auction_tasks.get(original_msg_id)
         if old_task and not old_task.done():
             old_task.cancel()
-
         task = asyncio.create_task(run_auction_timer(bot_instance, bot_id, original_msg_id))
         config.auction_tasks[original_msg_id] = task
 
     dp.include_router(router)
-
 
 # ====================== ПОДКЛЮЧЕНИЕ БОТОВ ======================
 
@@ -2941,7 +3432,7 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
             await callback.message.edit_text(
                 "📝 Выбраны тейки\n\n"
                 "Отправьте ссылку или ID канала для тейков\n"
-                "(если канал закрытый — числовой ID, например: -1001234567890):"
+                "(закрытый канал — числовой ID, например: -1001234567890):"
             )
             await state.set_state(ConnectBotStates.WaitingTakesChannel)
         elif module_type == "shop":
@@ -2950,7 +3441,7 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
             await callback.message.edit_text(
                 "🛒 Выбран магазин\n\n"
                 "Отправьте ссылку или ID канала для объявлений\n"
-                "(если канал закрытый — числовой ID, например: -1001234567890):"
+                "(закрытый канал — числовой ID, например: -1001234567890):"
             )
             await state.set_state(ConnectBotStates.WaitingAnnouncementChannel)
         else:
@@ -2959,7 +3450,7 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
             await callback.message.edit_text(
                 "📝🛒 Выбраны тейки + магазин\n\n"
                 "Сначала ссылка или ID канала для ТЕЙКОВ\n"
-                "(если канал закрытый — числовой ID, например: -1001234567890):"
+                "(закрытый канал — числовой ID, например: -1001234567890):"
             )
             await state.set_state(ConnectBotStates.WaitingTakesChannel)
         await callback.answer()
@@ -2981,7 +3472,7 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
             await message.answer(
                 f"✅ Канал для тейков: {channel}\n\n"
                 f"Теперь ссылка или ID канала для ОБЪЯВЛЕНИЙ\n"
-                f"(если канал закрытый — числовой ID, например: -1001234567890):"
+                f"(закрытый канал — числовой ID, например: -1001234567890):"
             )
             await state.set_state(ConnectBotStates.WaitingAnnouncementChannel)
         else:
@@ -3008,7 +3499,6 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
         await message.answer("⏳ Запускаю бота...")
         try:
             new_bot_id = f"bot_{req.user_id}_{int(datetime.now().timestamp())}"
-
             new_config = BotConfig(
                 bot_id=new_bot_id,
                 token=req.token,
@@ -3021,7 +3511,7 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
                 modules=req.modules,
                 owner_id=req.user_id,
                 base_exchange_rate=0.5,
-                take_cooldown_minutes=3
+                take_cooldown_minutes=TAKE_COOLDOWN_MINUTES
             )
             config.bots[new_bot_id] = new_config
 
@@ -3041,6 +3531,7 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
             new_bot = Bot(token=req.token)
             new_dp = Dispatcher(storage=MemoryStorage())
             create_bot_handlers(new_bot_id, new_bot, new_dp)
+            create_shop_admin_handlers(new_bot_id, new_bot, new_dp)
             config.active_bots[new_bot_id] = new_bot
             config.active_dispatchers[new_bot_id] = new_dp
             asyncio.create_task(new_dp.start_polling(new_bot))
@@ -3078,7 +3569,7 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
 # ====================== ГЛАВНАЯ ФУНКЦИЯ ======================
 
 async def main():
-    """Точка входа."""
+    """Точка входа: подключение БД, загрузка конфигурации, запуск ботов."""
     logger.info("Подключение к базе данных...")
     db.connect()
     logger.info("Загрузка конфигурации...")
@@ -3086,21 +3577,26 @@ async def main():
 
     main_cfg = config.bots.get("main")
     if main_cfg:
-        logger.info(f"Канал объявлений: '{main_cfg.announcement_channel}'")
+        logger.info(f"Канал объявлений главного бота: '{main_cfg.announcement_channel}'")
+        logger.info(f"Лимит тейков: {MAX_TAKES} шт, восстановление каждые {TAKE_COOLDOWN_MINUTES} мин")
 
+    # Главный бот
     main_bot = Bot(token=MAIN_BOT_TOKEN)
     main_dp = Dispatcher(storage=MemoryStorage())
     create_bot_handlers("main", main_bot, main_dp)
+    create_shop_admin_handlers("main", main_bot, main_dp)
     create_connection_handlers(main_bot, main_dp)
     config.active_bots["main"] = main_bot
     config.active_dispatchers["main"] = main_dp
 
+    # Запуск подключённых ботов
     for bot_id, bot_cfg in config.bots.items():
         if bot_id != "main":
             try:
                 connected_bot = Bot(token=bot_cfg.token)
                 connected_dp = Dispatcher(storage=MemoryStorage())
                 create_bot_handlers(bot_id, connected_bot, connected_dp)
+                create_shop_admin_handlers(bot_id, connected_bot, connected_dp)
                 config.active_bots[bot_id] = connected_bot
                 config.active_dispatchers[bot_id] = connected_dp
                 asyncio.create_task(connected_dp.start_polling(connected_bot))
@@ -3108,6 +3604,7 @@ async def main():
             except Exception as e:
                 logger.error(f"Ошибка запуска бота {bot_id}: {e}")
 
+    # Восстановление задач удаления пиара после перезапуска
     now = datetime.now()
     to_remove = []
 
@@ -3117,27 +3614,28 @@ async def main():
             target_bot = config.active_bots.get(info['bot_id'])
 
             if not target_bot:
+                logger.warning(f"Бот {info['bot_id']} не найден для задачи {deletion_id}")
                 to_remove.append(deletion_id)
                 continue
 
             if delete_at <= now:
-                logger.info(f"Просроченная задача {deletion_id}, удаляем")
+                logger.info(f"Просроченная задача {deletion_id}, удаляем сейчас")
                 try:
                     if info.get('is_pinned'):
                         await target_bot.unpin_chat_message(info['channel'], info['message_id'])
                     await target_bot.delete_message(info['channel'], info['message_id'])
                 except Exception as e:
-                    logger.error(f"Ошибка удаления: {e}")
+                    logger.error(f"Ошибка удаления просроченного: {e}")
                 to_remove.append(deletion_id)
             else:
                 remaining_hours = (delete_at - now).total_seconds() / 3600
-                logger.info(f"Восстановлена задача {deletion_id}, {remaining_hours:.1f}ч")
+                logger.info(f"Восстановлена задача {deletion_id}, осталось {remaining_hours:.1f}ч")
                 asyncio.create_task(delayed_delete_message(
                     target_bot, info['channel'], info['message_id'],
                     remaining_hours, info.get('is_pinned', False), deletion_id
                 ))
         except Exception as e:
-            logger.error(f"Ошибка восстановления {deletion_id}: {e}")
+            logger.error(f"Ошибка восстановления задачи {deletion_id}: {e}")
             to_remove.append(deletion_id)
 
     for deletion_id in to_remove:
@@ -3146,7 +3644,7 @@ async def main():
     if to_remove:
         config.save()
 
-    logger.info(f"Задач удаления: {len(config.scheduled_deletions)}")
+    logger.info(f"Активных задач удаления: {len(config.scheduled_deletions)}")
     logger.info("Запуск главного бота...")
     await main_dp.start_polling(main_bot)
 
