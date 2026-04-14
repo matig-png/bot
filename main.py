@@ -1735,9 +1735,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await callback.answer("Канал для объявлений не настроен.", show_alert=True)
             return
         await callback.message.edit_text(
-            "📢 Отправьте ваше объявление.\n\n"
-            "Можно отправить текст, фото, видео или любой другой контент.\n"
-            "Все эмодзи (включая премиум) и медиафайлы будут сохранены.",
+            "📢 Отправьте ваше объявление",
             reply_markup=build_cancel_keyboard()
         )
         await state.set_state(AnnouncementStates.WaitingAnnouncement)
