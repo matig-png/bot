@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 # ====================== КОНФИГУРАЦИЯ ======================
 
-MAIN_BOT_TOKEN = "8297267081:AAGjn8Mwea7gpqlHQcVdyhdwydACXwHFE5o"
+MAIN_BOT_TOKEN = "8525998255:AAEFlauob-YKcANq_f4CkAcZ3yV7njjeX8U"
 MAIN_ADMIN_ID = 6098677257
 ADMIN_IDS = {6098677257, 8092280284, 8366347415}
 DB_FILE = "bot_database.db"
@@ -391,8 +391,8 @@ class ConfigStorage:
                 token=MAIN_BOT_TOKEN,
                 currency_name="луны",
                 currency_emoji="🌗",
-                channel_url="https://t.me/WINGSOFFIRECHANNEL",
-                takes_channel="@WINGSOFFIRECHANNEL",
+                channel_url="https://t.me/Wings_of_fire_CF",
+                takes_channel="@Wings_of_fire_CF",
                 shop_channel="@wingsoffiremagazine",
                 announcement_channel=MAIN_ANNOUNCEMENT_CHANNEL,
                 modules=["takes", "shop"],
@@ -872,9 +872,6 @@ def build_shop_menu(bot_id: str) -> InlineKeyboardMarkup:
     """Меню магазина."""
     bot_cfg = config.bots.get(bot_id)
     builder = InlineKeyboardBuilder()
-    if bot_cfg and "takes" in bot_cfg.modules:
-        builder.row(InlineKeyboardButton(text="📢 Пиар (10/час)", callback_data="promo_regular"))
-        builder.row(InlineKeyboardButton(text="📌 Пиар с закрепом (25/час)", callback_data="promo_pinned"))
     if bot_cfg and "shop" in bot_cfg.modules:
         builder.row(InlineKeyboardButton(text="🛍 Купить товар", callback_data="buy_product"))
     builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="back_main"))
@@ -1119,6 +1116,7 @@ async def forward_take_to_channel(message: types.Message, bot_id: str, bot_insta
     """
     Пересылает тейк в канал с цензурой мата.
     Сохраняет спойлеры на медиа и всё форматирование текста.
+    Для главного бота добавляет подпись после #тейк.
     """
     try:
         bot_cfg = config.bots.get(bot_id)
@@ -1126,6 +1124,15 @@ async def forward_take_to_channel(message: types.Message, bot_id: str, bot_insta
             return None
 
         text = message.text or message.caption or ""
+
+        # Для главного бота добавляем подпись после #тейк
+        if bot_id == "main":
+            # Ищем #тейк в тексте (без учёта регистра) и добавляем подпись на следующей строке
+            import re as re_module
+            pattern = re_module.compile(r'(#тейк)', re_module.IGNORECASE)
+            if pattern.search(text):
+                text = pattern.sub(r'\1\n★@Wings_teyk_bot ; @Wings_of_fire_CF★', text, count=1)
+
         censored, has_profanity = censor_profanity(text, bot_id)
 
         # Проверяем наличие спойлера на медиа
@@ -1189,7 +1196,6 @@ async def forward_take_to_channel(message: types.Message, bot_id: str, bot_insta
     except Exception as e:
         logger.error(f"Ошибка пересылки тейка: {e}")
         return None
-
 
 # ====================== ОТЛОЖЕННОЕ УДАЛЕНИЕ ПИАРА ======================
 
@@ -1576,7 +1582,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
     @router.callback_query(F.data == "rates")
     async def callback_rates(callback: types.CallbackQuery):
-        text = "📊 Курсы валют:\n\n"
+        text = "Базовый курс 2 к 1 рублю, ниже курс валют относительно базы\n\n📊 Курсы валют:\n\n"
         for bid, cfg in config.bots.items():
             rate = get_exchange_rate(bid)
             text += f"{cfg.currency_name} {cfg.currency_emoji}: {rate:.2f}\n"
@@ -2305,144 +2311,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             except Exception as e:
                 logger.error(f"Ошибка автопересылки: {e}")
 
-        @router.callback_query(F.data.startswith("promo_"))
-        async def callback_promo(callback: types.CallbackQuery, state: FSMContext):
-            if callback.data == "promo_pay":
-                data = await state.get_data()
-                total_cost = data.get('total_cost', 0)
-                cfg = config.bots.get(bot_id)
-
-                if not db.deduct_balance(callback.from_user.id, bot_id, total_cost):
-                    await callback.answer("Недостаточно средств!", show_alert=True)
-                    return
-
-                post_data = data.get('post_data', {})
-                try:
-                    sent_message = None
-                    if post_data.get('is_forwarded'):
-                        sent_message = await bot_instance.copy_message(
-                            chat_id=cfg.takes_channel,
-                            from_chat_id=post_data['forward_chat_id'],
-                            message_id=post_data['forward_message_id']
-                        )
-                    elif post_data.get('photo'):
-                        sent_message = await bot_instance.send_photo(
-                            cfg.takes_channel, photo=post_data['photo'],
-                            caption=post_data.get('caption'),
-                            caption_entities=restore_entities(post_data.get('caption_entities'))
-                        )
-                    elif post_data.get('text'):
-                        sent_message = await bot_instance.send_message(
-                            cfg.takes_channel, post_data['text'],
-                            entities=restore_entities(post_data.get('entities'))
-                        )
-
-                    if not sent_message:
-                        raise Exception("Не удалось отправить сообщение")
-
-                    is_pinned = data.get('is_pinned', False)
-                    if is_pinned:
-                        try:
-                            await bot_instance.pin_chat_message(cfg.takes_channel, sent_message.message_id)
-                        except Exception as e:
-                            logger.error(f"Ошибка закрепления: {e}")
-
-                    hours = data.get('hours', 1)
-                    delete_at = (datetime.now() + timedelta(hours=hours)).isoformat()
-                    deletion_id = f"{bot_id}_{sent_message.message_id}"
-
-                    config.scheduled_deletions[deletion_id] = {
-                        'bot_id': bot_id, 'channel': cfg.takes_channel,
-                        'message_id': sent_message.message_id,
-                        'delete_at': delete_at, 'is_pinned': is_pinned
-                    }
-                    config.save()
-
-                    asyncio.create_task(delayed_delete_message(
-                        bot_instance, cfg.takes_channel, sent_message.message_id,
-                        hours, is_pinned, deletion_id
-                    ))
-
-                    db.set_bot_data(callback.from_user.id, bot_id, last_promo_at=datetime.now().isoformat())
-                    pin_text = "📌 Закреплён и " if is_pinned else ""
-                    await callback.message.edit_text(
-                        f"✅ Пиар размещён на {hours}ч!\n{pin_text}будет удалён автоматически.",
-                        reply_markup=build_main_menu(bot_id)
-                    )
-
-                except Exception as e:
-                    db.add_balance(callback.from_user.id, bot_id, total_cost)
-                    await callback.message.edit_text(
-                        f"❌ Ошибка: {e}\nЛуны возвращены.",
-                        reply_markup=build_main_menu(bot_id)
-                    )
-
-                await state.clear()
-                await callback.answer()
-                return
-
-            is_pinned = callback.data == "promo_pinned"
-            can_promo, promo_msg = can_use_promo(callback.from_user.id, bot_id)
-            if not can_promo:
-                await callback.answer(promo_msg, show_alert=True)
-                return
-
-            cfg = config.bots.get(bot_id)
-            price_per_hour = cfg.promo_pin_price_per_hour if is_pinned else cfg.promo_price_per_hour
-            await state.update_data(is_pinned=is_pinned, price_per_hour=price_per_hour)
-            await callback.message.edit_text(
-                f"{'📌 Пиар с закрепом' if is_pinned else '📢 Пиар'}\n"
-                f"Стоимость: {price_per_hour} {cfg.currency_emoji}/час\n\nСколько часов?",
-                reply_markup=build_cancel_keyboard()
-            )
-            await state.set_state(PromoStates.WaitingHours)
-            await callback.answer()
-
-        @router.message(PromoStates.WaitingHours)
-        async def promo_hours(message: types.Message, state: FSMContext):
-            try:
-                hours = int(message.text)
-                if hours <= 0:
-                    raise ValueError
-            except ValueError:
-                await message.answer("Введите положительное число.", reply_markup=build_cancel_keyboard())
-                return
-            await state.update_data(hours=hours)
-            await message.answer(
-                "Отправьте ваш рекламный пост:\n\n"
-                "💡 Ссылки и форматирование сохранятся.\n"
-                "📎 Пересланные сообщения сохранят премиум эмодзи.",
-                reply_markup=build_cancel_keyboard()
-            )
-            await state.set_state(PromoStates.WaitingPost)
-
-        @router.message(PromoStates.WaitingPost)
-        async def promo_post(message: types.Message, state: FSMContext):
-            post_data = {
-                'text': message.text, 'caption': message.caption,
-                'photo': message.photo[-1].file_id if message.photo else None,
-                'entities': serialize_entities(message.entities),
-                'caption_entities': serialize_entities(message.caption_entities),
-                'forward_chat_id': message.chat.id,
-                'forward_message_id': message.message_id,
-                'is_forwarded': message.forward_origin is not None,
-            }
-            data = await state.get_data()
-            total_cost = data['hours'] * data['price_per_hour']
-            await state.update_data(post_data=post_data, total_cost=total_cost)
-            cfg = config.bots.get(bot_id)
-            balance = db.get_balance(message.from_user.id, bot_id)
-            balance_str = "∞" if balance == float('inf') else f"{balance:.0f}"
-            forward_note = "\n📎 Пересланное — сохранит премиум эмодзи" if post_data['is_forwarded'] else ""
-            await message.answer(
-                f"{'📌 Пиар с закрепом' if data['is_pinned'] else '📢 Пиар'}\n"
-                f"⏱ Длительность: {data['hours']} ч.\n"
-                f"💰 К оплате: {total_cost} {cfg.currency_emoji}\n"
-                f"💳 Ваш баланс: {balance_str} {cfg.currency_emoji}"
-                f"{forward_note}",
-                reply_markup=build_promo_confirm_keyboard()
-            )
-            await state.set_state(PromoStates.WaitingConfirmation)
 
         @router.callback_query(F.data == "buy_product")
         async def callback_buy_product(callback: types.CallbackQuery, state: FSMContext):
