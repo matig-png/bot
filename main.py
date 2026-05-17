@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 # ====================== КОНФИГУРАЦИЯ ======================
 
-MAIN_BOT_TOKEN = "8525998255:AAEFlauob-YKcANq_f4CkAcZ3yV7njjeX8U"
+MAIN_BOT_TOKEN = "8699376320:AAEA8EamdGIPHYbCI3E2Y_oYvvA1QBYTCzQ"
 MAIN_ADMIN_ID = 6098677257
 ADMIN_IDS = {6098677257, 8092280284, 8366347415}
 DB_FILE = "bot_database.db"
@@ -52,6 +52,10 @@ TG_LINK_PATTERN = re.compile(
     r'(?:https?://)?(?:t\.me|telegram\.me)/(?:joinchat/)?([a-zA-Z0-9_]+)',
     re.IGNORECASE
 )
+
+# ====================== НОВОЕ: Буфер для медиагрупп ======================
+media_group_buffer: Dict[str, Dict[str, Any]] = {}
+MEDIA_GROUP_TIMEOUT = 1.0  # секунды ожидания завершения альбома
 
 
 # ====================== БАЗА ДАННЫХ ======================
@@ -500,7 +504,6 @@ class QuizStates(StatesGroup):
     Question1 = State()
     Question2 = State()
     Question3 = State()
-
 
 # ====================== ЦЕНЗУРА ======================
 
@@ -1110,7 +1113,7 @@ def build_quiz_keyboard(question_num: int) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-# ====================== ПЕРЕСЫЛКА ТЕЙКА ======================
+# ====================== НОВОЕ: ОБРАБОТКА МЕДИАГРУПП ======================
 
 async def forward_take_to_channel(message: types.Message, bot_id: str, bot_instance: Bot) -> Optional[types.Message]:
     """
@@ -1127,7 +1130,6 @@ async def forward_take_to_channel(message: types.Message, bot_id: str, bot_insta
 
         # Для главного бота добавляем подпись после #тейк
         if bot_id == "main":
-            # Ищем #тейк в тексте (без учёта регистра) и добавляем подпись на следующей строке
             import re as re_module
             pattern = re_module.compile(r'(#тейк)', re_module.IGNORECASE)
             if pattern.search(text):
@@ -1222,7 +1224,6 @@ async def delayed_delete_message(bot_instance: Bot, channel: str, message_id: in
         logger.info(f"Задача удаления {deletion_id} отменена")
     except Exception as e:
         logger.error(f"Ошибка отложенного удаления: {e}")
-
 
 # ====================== АУКЦИОН ======================
 
@@ -1409,7 +1410,8 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
 
 def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     """Создаёт все обработчики для конкретного бота."""
-    router = Router()
+    # ИСПРАВЛЕНИЕ: Создаём НОВЫЙ роутер для КАЖДОГО бота
+    router = Router(name=f"bot_{bot_id}_handlers")
     bot_config = config.bots.get(bot_id)
 
     @router.message(Command("start"))
@@ -1730,7 +1732,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         await state.clear()
         await callback.answer()
 
-    # =================== ОБЪЯВЛЕНИЯ ===================
+    # =================== ОБЪЯВЛЕНИЯ (С ПОДДЕРЖКОЙ МЕДИАГРУПП) ===================
 
     @router.callback_query(F.data == "post_announcement")
     async def callback_post_announcement(callback: types.CallbackQuery, state: FSMContext):
@@ -1741,19 +1743,172 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await callback.answer("Канал для объявлений не настроен.", show_alert=True)
             return
         await callback.message.edit_text(
-            "📢 Отправьте ваше объявление",
+            "📢 Отправьте ваше объявление (можно несколько фото/видео)",
             reply_markup=build_cancel_keyboard()
         )
         await state.set_state(AnnouncementStates.WaitingAnnouncement)
         await callback.answer()
 
+    # =================== НОВОЕ: Обработчик медиагрупп для объявлений ===================
+    @router.message(AnnouncementStates.WaitingAnnouncement, F.media_group_id)
+    async def process_announcement_media_group(message: types.Message, state: FSMContext):
+        """Обработка медиагруппы объявления."""
+        group_id = f"ann_{message.media_group_id}"
+        
+        if group_id not in media_group_buffer:
+            media_group_buffer[group_id] = {
+                'messages': [],
+                'user_id': message.from_user.id,
+                'bot_id': bot_id,
+                'is_announcement': True,
+                'state': state
+            }
+            # Запускаем таймер обработки
+            asyncio.create_task(process_announcement_media_group_complete(group_id, bot_instance, state))
+        
+        media_group_buffer[group_id]['messages'].append(message)
+
+    async def process_announcement_media_group_complete(group_id: str, bot: Bot, state: FSMContext):
+        """Завершение обработки медиагруппы объявления."""
+        await asyncio.sleep(MEDIA_GROUP_TIMEOUT)
+        
+        if group_id not in media_group_buffer:
+            return
+        
+        group_data = media_group_buffer[group_id]
+        messages = group_data['messages']
+        user_id = group_data['user_id']
+        
+        cfg = config.bots.get(bot_id)
+        if not cfg or not cfg.announcement_channel:
+            del media_group_buffer[group_id]
+            return
+        
+        # Проверяем блокировку для объявлений
+        if check_announcement_blocked(user_id, bot_id):
+            try:
+                await bot.send_message(
+                    user_id,
+                    "🚫 Вы заблокированы для отправки объявлений.",
+                    reply_markup=build_main_menu(bot_id)
+                )
+            except Exception:
+                pass
+            del media_group_buffer[group_id]
+            await state.clear()
+            return
+        
+        # Собираем модераторов объявлений
+        all_users = db.get_all_users_for_bot(bot_id)
+        announcement_mods = []
+        for user in all_users:
+            ud = db.get_bot_data(user['user_id'], bot_id)
+            if ud.get('is_announcement_mod') and not check_admin(user['user_id'], bot_id):
+                announcement_mods.append(user['user_id'])
+        # Добавляем администраторов
+        for user in all_users:
+            if check_admin(user['user_id'], bot_id) and user['user_id'] not in announcement_mods:
+                announcement_mods.append(user['user_id'])
+        
+        if announcement_mods:
+            # Есть модераторы — отправляем на проверку
+            ann_id = str(uuid.uuid4())[:8]
+            ann_key = f"ann_{ann_id}"
+            
+            # Сохраняем все сообщения медиагруппы
+            config.pending_takes[ann_key] = {
+                'user_id': user_id,
+                'bot_id': bot_id,
+                'type': 'announcement_media_group',
+                'media_group': [
+                    {
+                        'chat_id': msg.chat.id,
+                        'message_id': msg.message_id,
+                        'photo': msg.photo[-1].file_id if msg.photo else None,
+                        'video': msg.video.file_id if msg.video else None,
+                        'caption': msg.caption if hasattr(msg, 'caption') else None,
+                        'has_spoiler': getattr(msg, 'has_media_spoiler', False)
+                    }
+                    for msg in messages
+                ]
+            }
+            config.save()
+            
+            is_ann_blocked = check_announcement_blocked(user_id, bot_id)
+            
+            for mod_uid in announcement_mods:
+                try:
+                    if is_ann_blocked:
+                        mod_kb = build_announcement_moderation_keyboard_blocked(ann_id, user_id)
+                    else:
+                        mod_kb = build_announcement_moderation_keyboard(ann_id, user_id)
+                    await bot.send_message(
+                        mod_uid,
+                        f"📢 Новое объявление (альбом: {len(messages)} медиа) на проверке",
+                        reply_markup=mod_kb
+                    )
+                    # Пересылаем все медиа модератору
+                    for msg in messages:
+                        await msg.copy_to(mod_uid)
+                except Exception as e:
+                    logger.error(f"Ошибка отправки альбома модератору объявлений {mod_uid}: {e}")
+            
+            try:
+                await bot.send_message(
+                    user_id,
+                    "📝 Объявление отправлено на модерацию.",
+                    reply_markup=build_main_menu(bot_id)
+                )
+            except Exception:
+                pass
+        else:
+            # Нет модераторов — публикуем сразу медиагруппу
+            try:
+                from aiogram.types import InputMediaPhoto, InputMediaVideo
+                
+                media_group = []
+                for idx, msg in enumerate(messages):
+                    text = msg.caption or "" if idx == 0 else ""
+                    has_spoiler = getattr(msg, 'has_media_spoiler', False)
+                    
+                    if msg.photo:
+                        media_group.append(InputMediaPhoto(
+                            media=msg.photo[-1].file_id,
+                            caption=text,
+                            has_spoiler=has_spoiler
+                        ))
+                    elif msg.video:
+                        media_group.append(InputMediaVideo(
+                            media=msg.video.file_id,
+                            caption=text,
+                            has_spoiler=has_spoiler
+                        ))
+                
+                await bot.send_media_group(cfg.announcement_channel, media_group)
+                await bot.send_message(
+                    user_id,
+                    "✅ Ваше объявление опубликовано!",
+                    reply_markup=build_main_menu(bot_id)
+                )
+                logger.info(f"Объявление-альбом от {user_id} в {cfg.announcement_channel}")
+            except Exception as e:
+                logger.error(f"Ошибка отправки объявления-альбома: {e}")
+                try:
+                    await bot.send_message(
+                        user_id,
+                        f"❌ Ошибка при отправке объявления: {e}",
+                        reply_markup=build_main_menu(bot_id)
+                    )
+                except Exception:
+                    pass
+        
+        del media_group_buffer[group_id]
+        await state.clear()
+
     @router.message(AnnouncementStates.WaitingAnnouncement)
     async def process_announcement(message: types.Message, state: FSMContext):
         """
-        Обработка объявления.
-        Блокировка объявлений (is_announcement_blocked) независима от блокировки тейков (is_blocked).
-        Если есть модераторы объявлений — отправляем на проверку.
-        Если нет — публикуем сразу.
+        Обработка одиночного объявления (не альбома).
         """
         cfg = config.bots.get(bot_id)
         if not cfg or not cfg.announcement_channel:
@@ -1761,7 +1916,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await state.clear()
             return
 
-        # Проверяем блокировку именно для объявлений (независимо от тейков)
+        # Проверяем блокировку именно для объявлений
         if check_announcement_blocked(message.from_user.id, bot_id):
             await message.answer(
                 "🚫 Вы заблокированы для отправки объявлений.",
@@ -1795,7 +1950,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             }
             config.save()
 
-            # Выбираем клавиатуру в зависимости от статуса блокировки в объявлениях
             is_ann_blocked = check_announcement_blocked(message.from_user.id, bot_id)
 
             for mod_uid in announcement_mods:
@@ -1815,7 +1969,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
             await message.answer("📝 Объявление отправлено на модерацию.", reply_markup=build_main_menu(bot_id))
         else:
-            # Нет модераторов — публикуем сразу через copy_message (сохраняет премиум эмодзи)
+            # Нет модераторов — публикуем сразу через copy_message
             try:
                 await bot_instance.copy_message(
                     chat_id=cfg.announcement_channel,
@@ -1845,11 +1999,39 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             return
         cfg = config.bots.get(bot_id)
         try:
-            await bot_instance.copy_message(
-                chat_id=cfg.announcement_channel,
-                from_chat_id=ann_data['chat_id'],
-                message_id=ann_data['message_id']
-            )
+            # Проверяем тип объявления
+            if ann_data.get('type') == 'announcement_media_group':
+                # Это медиагруппа
+                from aiogram.types import InputMediaPhoto, InputMediaVideo
+                
+                media_group = []
+                for idx, media_info in enumerate(ann_data['media_group']):
+                    text = media_info.get('caption', '') if idx == 0 else ""
+                    has_spoiler = media_info.get('has_spoiler', False)
+                    
+                    if media_info.get('photo'):
+                        media_group.append(InputMediaPhoto(
+                            media=media_info['photo'],
+                            caption=text,
+                            has_spoiler=has_spoiler
+                        ))
+                    elif media_info.get('video'):
+                        media_group.append(InputMediaVideo(
+                            media=media_info['video'],
+                            caption=text,
+                            has_spoiler=has_spoiler
+                        ))
+                
+                await bot_instance.send_media_group(cfg.announcement_channel, media_group)
+                logger.info(f"Объявление-альбом одобрено: {len(media_group)} медиа")
+            else:
+                # Одиночное объявление
+                await bot_instance.copy_message(
+                    chat_id=cfg.announcement_channel,
+                    from_chat_id=ann_data['chat_id'],
+                    message_id=ann_data['message_id']
+                )
+            
             del config.pending_takes[ann_key]
             config.save()
             await callback.message.edit_text("✅ Объявление одобрено и опубликовано.")
@@ -1880,16 +2062,10 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
     @router.callback_query(F.data.startswith("ann_block_"))
     async def announcement_block_user(callback: types.CallbackQuery):
-        """
-        Блокировка пользователя для объявлений.
-        Независима от блокировки тейков — пользователь может быть заблокирован
-        только для объявлений, но не для тейков, и наоборот.
-        После блокировки кнопка меняется на 'Разблокировать (объявления)'.
-        """
+        """Блокировка пользователя для объявлений."""
         if not check_announcement_moderator(callback.from_user.id, bot_id):
             await callback.answer("Нет доступа", show_alert=True)
             return
-        # Формат callback_data: ann_block_{uid}_{ann_id}
         parts = callback.data[10:].split("_", 1)
         uid = int(parts[0])
         ann_id = parts[1] if len(parts) > 1 else ""
@@ -1898,7 +2074,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await bot_instance.send_message(uid, "🚫 Вы заблокированы для отправки объявлений.")
         except Exception:
             pass
-        # Обновляем кнопки — показываем кнопку разблокировки
         try:
             await callback.message.edit_reply_markup(
                 reply_markup=build_announcement_moderation_keyboard_blocked(ann_id, uid)
@@ -1909,15 +2084,10 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
     @router.callback_query(F.data.startswith("ann_unblock_"))
     async def announcement_unblock_user(callback: types.CallbackQuery):
-        """
-        Разблокировка пользователя для объявлений.
-        Независима от разблокировки тейков.
-        После разблокировки кнопка меняется на 'Заблокировать (объявления)'.
-        """
+        """Разблокировка пользователя для объявлений."""
         if not check_announcement_moderator(callback.from_user.id, bot_id):
             await callback.answer("Нет доступа", show_alert=True)
             return
-        # Формат callback_data: ann_unblock_{uid}_{ann_id}
         parts = callback.data[12:].split("_", 1)
         uid = int(parts[0])
         ann_id = parts[1] if len(parts) > 1 else ""
@@ -1926,7 +2096,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await bot_instance.send_message(uid, "✅ Вы разблокированы для объявлений.")
         except Exception:
             pass
-        # Обновляем кнопки — показываем кнопку блокировки
         try:
             await callback.message.edit_reply_markup(
                 reply_markup=build_announcement_moderation_keyboard(ann_id, uid)
@@ -1935,12 +2104,226 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             pass
         await callback.answer("✅ Разблокирован для объявлений", show_alert=True)
 
-    # =================== ТЕЙКИ ===================
+
+    # =================== ТЕЙКИ С ПОДДЕРЖКОЙ МЕДИАГРУПП ===================
 
     if bot_config and "takes" in bot_config.modules:
 
+        # =================== НОВОЕ: Обработчик медиагрупп для тейков ===================
+        async def handle_take_media_group(message: types.Message, bid: str, bot: Bot, state: FSMContext):
+            """Обработка медиагруппы тейка."""
+            group_id = f"take_{message.media_group_id}"
+            
+            if group_id not in media_group_buffer:
+                media_group_buffer[group_id] = {
+                    'messages': [],
+                    'user_id': message.from_user.id,
+                    'bot_id': bid,
+                    'is_take': True,
+                    'state': state
+                }
+                # Запускаем таймер обработки
+                asyncio.create_task(process_take_media_group_complete(group_id, bot))
+            
+            media_group_buffer[group_id]['messages'].append(message)
+
+        async def process_take_media_group_complete(group_id: str, bot: Bot):
+            """Завершение обработки медиагруппы тейка."""
+            await asyncio.sleep(MEDIA_GROUP_TIMEOUT)
+            
+            if group_id not in media_group_buffer:
+                return
+            
+            group_data = media_group_buffer[group_id]
+            messages = group_data['messages']
+            user_id = group_data['user_id']
+            bid = group_data['bot_id']
+            
+            cfg = config.bots.get(bid)
+            if not cfg:
+                del media_group_buffer[group_id]
+                return
+            
+            user_data = db.get_bot_data(user_id, bid)
+            
+            # Проверка блокировки тейков
+            if user_data.get('is_blocked'):
+                try:
+                    await bot.send_message(user_id, "🚫 Вы заблокированы для отправки тейков.")
+                except Exception:
+                    pass
+                del media_group_buffer[group_id]
+                return
+            
+            can_take, remaining_takes, cooldown_msg = can_send_take(user_id, bid)
+            if not can_take:
+                try:
+                    await bot.send_message(user_id, f"⏳ {cooldown_msg}")
+                except Exception:
+                    pass
+                del media_group_buffer[group_id]
+                return
+            
+            # Сортируем по ID сообщения
+            messages.sort(key=lambda m: m.message_id)
+            first_msg = messages[0]
+            text = first_msg.text or first_msg.caption or ""
+            
+            # Проверяем наличие #тейк
+            if "#тейк" not in text.lower():
+                try:
+                    await bot.send_message(user_id, "⚠️ Добавьте #тейк в сообщение!")
+                except Exception:
+                    pass
+                del media_group_buffer[group_id]
+                return
+            
+            if cfg.takes_paused:
+                # Сохраняем в очередь паузы
+                take_data = {
+                    'user_id': user_id, 'bot_id': bid,
+                    'media_group': [
+                        {
+                            'photo': msg.photo[-1].file_id if msg.photo else None,
+                            'video': msg.video.file_id if msg.video else None,
+                            'caption': msg.caption if hasattr(msg, 'caption') else None,
+                            'has_spoiler': getattr(msg, 'has_media_spoiler', False)
+                        }
+                        for msg in messages
+                    ],
+                    'timestamp': datetime.now().isoformat()
+                }
+                if bid not in config.paused_takes:
+                    config.paused_takes[bid] = []
+                config.paused_takes[bid].append(take_data)
+                config.save()
+                db.add_take_timestamp(user_id, bid)
+                try:
+                    await bot.send_message(
+                        user_id,
+                        "⏸ Тейки сейчас на паузе. Ваш тейк будет отправлен когда тейки включат.",
+                        reply_markup=build_main_menu(bid)
+                    )
+                except Exception:
+                    pass
+                del media_group_buffer[group_id]
+                return
+            
+            needs_moderation = cfg.manual_control
+            moderation_reason = "Ручной контроль"
+            
+            if not needs_moderation:
+                if contains_marker_words(text, bid):
+                    needs_moderation = True
+                    moderation_reason = "Маркерное слово"
+            
+            if not needs_moderation:
+                has_group_link, link_reason = await check_telegram_links(text, bot)
+                if has_group_link:
+                    needs_moderation = True
+                    moderation_reason = link_reason
+            
+            if needs_moderation:
+                # Отправка на модерацию
+                take_id = str(uuid.uuid4())[:8]
+                config.pending_takes[take_id] = {
+                    'user_id': user_id, 'bot_id': bid,
+                    'type': 'take_media_group',
+                    'media_group': [
+                        {
+                            'photo': msg.photo[-1].file_id if msg.photo else None,
+                            'video': msg.video.file_id if msg.video else None,
+                            'caption': msg.caption if hasattr(msg, 'caption') else None,
+                            'has_spoiler': getattr(msg, 'has_media_spoiler', False)
+                        }
+                        for msg in messages
+                    ]
+                }
+                config.save()
+                
+                is_blocked_flag = bool(db.get_bot_data(user_id, bid).get('is_blocked', 0))
+                all_users = db.get_all_users_for_bot(bid)
+                for user in all_users:
+                    mod_uid = user['user_id']
+                    if check_moderator(mod_uid, bid):
+                        try:
+                            if is_blocked_flag:
+                                mod_kb = build_take_moderation_keyboard_blocked(take_id, user_id)
+                            else:
+                                mod_kb = build_take_moderation_keyboard(take_id, user_id, False)
+                            await bot.send_message(
+                                mod_uid,
+                                f"⚠️ Тейк-альбом ({len(messages)} медиа) на модерации\nПричина: {moderation_reason}",
+                                reply_markup=mod_kb
+                            )
+                            # Пересылаем все медиа
+                            for msg in messages:
+                                await msg.copy_to(mod_uid)
+                        except Exception as e:
+                            logger.error(f"Ошибка отправки модератору {mod_uid}: {e}")
+                
+                try:
+                    await bot.send_message(
+                        user_id,
+                        "📝 Тейк отправлен на модерацию.",
+                        reply_markup=build_main_menu(bid)
+                    )
+                except Exception:
+                    pass
+            else:
+                # Публикуем напрямую медиагруппу
+                try:
+                    from aiogram.types import InputMediaPhoto, InputMediaVideo
+                    
+                    media_group = []
+                    for idx, msg in enumerate(messages):
+                        text_caption = msg.caption or "" if idx == 0 else ""
+                        
+                        # Для главного бота добавляем подпись
+                        if bid == "main" and idx == 0 and text_caption:
+                            import re as re_module
+                            pattern = re_module.compile(r'(#тейк)', re_module.IGNORECASE)
+                            if pattern.search(text_caption):
+                                text_caption = pattern.sub(r'\1\n★@Wings_teyk_bot ; @Wings_of_fire_CF★', text_caption, count=1)
+                        
+                        censored, has_prof = censor_profanity(text_caption, bid)
+                        has_spoiler = getattr(msg, 'has_media_spoiler', False)
+                        
+                        if msg.photo:
+                            media_group.append(InputMediaPhoto(
+                                media=msg.photo[-1].file_id,
+                                caption=censored if (idx == 0 and has_prof) else (text_caption if idx == 0 else ""),
+                                parse_mode="HTML" if (idx == 0 and has_prof) else None,
+                                has_spoiler=has_spoiler
+                            ))
+                        elif msg.video:
+                            media_group.append(InputMediaVideo(
+                                media=msg.video.file_id,
+                                caption=censored if (idx == 0 and has_prof) else (text_caption if idx == 0 else ""),
+                                parse_mode="HTML" if (idx == 0 and has_prof) else None,
+                                has_spoiler=has_spoiler
+                            ))
+                    
+                    await bot.send_media_group(cfg.takes_channel, media_group)
+                    db.add_take_timestamp(user_id, bid)
+                    _, new_remaining, new_msg = can_send_take(user_id, bid)
+                    await bot.send_message(
+                        user_id,
+                        f"✅ Тейк отправлен в канал!\n📝 {new_msg}",
+                        reply_markup=build_main_menu(bid)
+                    )
+                    logger.info(f"Тейк-альбом от {user_id} опубликован: {len(messages)} медиа")
+                except Exception as e:
+                    logger.error(f"Ошибка публикации тейка-альбома: {e}")
+                    try:
+                        await bot.send_message(user_id, "❌ Ошибка при отправке тейка.")
+                    except Exception:
+                        pass
+            
+            del media_group_buffer[group_id]
+
         async def process_take_message(message: types.Message, bid: str, bot: Bot):
-            """Общая логика обработки тейка."""
+            """Общая логика обработки одиночного тейка."""
             uid = message.from_user.id
             register_user(message.from_user, bid)
             cfg = config.bots.get(bid)
@@ -2014,7 +2397,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     mod_uid = user['user_id']
                     if check_moderator(mod_uid, bid):
                         try:
-                            # Выбираем клавиатуру в зависимости от статуса блокировки в тейках
                             if is_blocked_flag:
                                 mod_kb = build_take_moderation_keyboard_blocked(take_id, uid)
                             else:
@@ -2031,7 +2413,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 await message.answer("📝 Тейк отправлен на модерацию.", reply_markup=build_main_menu(bid))
                 return True
             else:
-                # Тейк публикуется напрямую в канал
                 sent = await forward_take_to_channel(message, bid, bot)
                 if sent:
                     db.add_take_timestamp(uid, bid)
@@ -2041,7 +2422,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                         reply_markup=build_main_menu(bid)
                     )
 
-                    # Отправляем всем модераторам с кнопкой удаления
                     channel_msg_id = sent.message_id
                     is_blocked_flag = bool(db.get_bot_data(uid, bid).get('is_blocked', 0))
 
@@ -2050,7 +2430,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                         mod_uid = user['user_id']
                         if check_moderator(mod_uid, bid):
                             try:
-                                # Выбираем клавиатуру в зависимости от статуса блокировки в тейках
                                 if is_blocked_flag:
                                     published_kb = build_published_take_keyboard_blocked(channel_msg_id, uid)
                                 else:
@@ -2083,14 +2462,28 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             pause_text = " ⏸ (на паузе — будет отправлен позже)" if cfg.takes_paused else ""
             await callback.message.edit_text(
                 f"📝 Отправьте тейк с хештегом #тейк{pause_text}\n"
+                f"💡 Можно отправить несколько фото/видео как альбом\n"
                 f"⏱ {cooldown_msg}",
                 reply_markup=build_cancel_keyboard()
             )
             await state.set_state(TakeStates.WaitingTake)
             await callback.answer()
 
+        @router.message(TakeStates.WaitingTake, F.media_group_id)
+        async def process_take_from_button_media_group(message: types.Message, state: FSMContext):
+            """Обработка медиагруппы тейка из состояния."""
+            group_id = f"take_{message.media_group_id}"
+            text = message.text or message.caption or ""
+            
+            # Проверяем #тейк только у первого сообщения, остальные просто добавляем в буфер
+            if group_id not in media_group_buffer and "#тейк" not in text.lower():
+                await message.answer("⚠️ Добавьте #тейк в сообщение!", reply_markup=build_cancel_keyboard())
+                return
+            await handle_take_media_group(message, bot_id, bot_instance, state)
+
         @router.message(TakeStates.WaitingTake)
         async def process_take_from_button(message: types.Message, state: FSMContext):
+            """Обработка одиночного тейка из состояния."""
             text = message.text or message.caption or ""
             if "#тейк" not in text.lower():
                 await message.answer("⚠️ Добавьте #тейк в сообщение!", reply_markup=build_cancel_keyboard())
@@ -2098,9 +2491,25 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await process_take_message(message, bot_id, bot_instance)
             await state.clear()
 
+        @router.message(F.media_group_id)
+        async def auto_forward_take_media_group(message: types.Message, state: FSMContext):
+            """Автоматическая обработка медиагруппы (альбома)."""
+            if message.chat.type in ("channel", "group", "supergroup"):
+                return
+            current_state = await state.get_state()
+            if current_state == TakeStates.WaitingTake:
+                return
+            
+            group_id = f"take_{message.media_group_id}"
+            text = message.text or message.caption or ""
+            
+            # Ловим первое фото с #тейк ИЛИ последующие фото из этого же альбома
+            if "#тейк" in text.lower() or group_id in media_group_buffer:
+                await handle_take_media_group(message, bot_id, bot_instance, state)
+
         @router.message(F.text.contains("#тейк") | F.caption.contains("#тейк"))
         async def auto_forward_take(message: types.Message, state: FSMContext):
-            # Игнорируем посты из каналов и групп — только личные чаты
+            """Автоматическая обработка одиночного тейка."""
             if message.chat.type in ("channel", "group", "supergroup"):
                 return
             current_state = await state.get_state()
@@ -2117,32 +2526,71 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 return
             cfg = config.bots.get(take_data['bot_id'])
             try:
-                text = take_data.get('caption') or take_data.get('text', '')
-                censored, has_profanity = censor_profanity(text, bot_id)
-                send_kwargs = {
-                    "caption": censored if has_profanity else text,
-                    "parse_mode": "HTML" if has_profanity else None
-                }
-                if take_data.get('photo'):
-                    await bot_instance.send_photo(cfg.takes_channel, photo=take_data['photo'], **send_kwargs)
-                elif take_data.get('video'):
-                    await bot_instance.send_video(cfg.takes_channel, video=take_data['video'], **send_kwargs)
-                elif take_data.get('animation'):
-                    await bot_instance.send_animation(cfg.takes_channel, animation=take_data['animation'], **send_kwargs)
-                elif take_data.get('document'):
-                    await bot_instance.send_document(cfg.takes_channel, document=take_data['document'], **send_kwargs)
-                elif take_data.get('voice'):
-                    await bot_instance.send_voice(cfg.takes_channel, voice=take_data['voice'], **send_kwargs)
-                elif take_data.get('audio'):
-                    await bot_instance.send_audio(cfg.takes_channel, audio=take_data['audio'], **send_kwargs)
-                elif take_data.get('sticker'):
-                    await bot_instance.send_sticker(cfg.takes_channel, sticker=take_data['sticker'])
+                # Проверяем тип тейка
+                if take_data.get('type') == 'take_media_group':
+                    # Это медиагруппа
+                    from aiogram.types import InputMediaPhoto, InputMediaVideo
+                    
+                    media_group = []
+                    for idx, media_info in enumerate(take_data['media_group']):
+                        text = media_info.get('caption', '') if idx == 0 else ""
+                        
+                        # Для главного бота добавляем подпись
+                        if take_data['bot_id'] == "main" and idx == 0 and text:
+                            import re as re_module
+                            pattern = re_module.compile(r'(#тейк)', re_module.IGNORECASE)
+                            if pattern.search(text):
+                                text = pattern.sub(r'\1\n★@Wings_teyk_bot ; @Wings_of_fire_CF★', text, count=1)
+                        
+                        censored, has_prof = censor_profanity(text, take_data['bot_id'])
+                        has_spoiler = media_info.get('has_spoiler', False)
+                        
+                        if media_info.get('photo'):
+                            media_group.append(InputMediaPhoto(
+                                media=media_info['photo'],
+                                caption=censored if (idx == 0 and has_prof) else (text if idx == 0 else ""),
+                                parse_mode="HTML" if (idx == 0 and has_prof) else None,
+                                has_spoiler=has_spoiler
+                            ))
+                        elif media_info.get('video'):
+                            media_group.append(InputMediaVideo(
+                                media=media_info['video'],
+                                caption=censored if (idx == 0 and has_prof) else (text if idx == 0 else ""),
+                                parse_mode="HTML" if (idx == 0 and has_prof) else None,
+                                has_spoiler=has_spoiler
+                            ))
+                    
+                    await bot_instance.send_media_group(cfg.takes_channel, media_group)
+                    logger.info(f"Тейк-альбом одобрен: {len(media_group)} медиа")
                 else:
-                    await bot_instance.send_message(
-                        cfg.takes_channel,
-                        censored if has_profanity else take_data['text'],
-                        parse_mode="HTML" if has_profanity else None
-                    )
+                    # Одиночный тейк
+                    text = take_data.get('caption') or take_data.get('text', '')
+                    censored, has_profanity = censor_profanity(text, bot_id)
+                    send_kwargs = {
+                        "caption": censored if has_profanity else text,
+                        "parse_mode": "HTML" if has_profanity else None
+                    }
+                    if take_data.get('photo'):
+                        await bot_instance.send_photo(cfg.takes_channel, photo=take_data['photo'], **send_kwargs)
+                    elif take_data.get('video'):
+                        await bot_instance.send_video(cfg.takes_channel, video=take_data['video'], **send_kwargs)
+                    elif take_data.get('animation'):
+                        await bot_instance.send_animation(cfg.takes_channel, animation=take_data['animation'], **send_kwargs)
+                    elif take_data.get('document'):
+                        await bot_instance.send_document(cfg.takes_channel, document=take_data['document'], **send_kwargs)
+                    elif take_data.get('voice'):
+                        await bot_instance.send_voice(cfg.takes_channel, voice=take_data['voice'], **send_kwargs)
+                    elif take_data.get('audio'):
+                        await bot_instance.send_audio(cfg.takes_channel, audio=take_data['audio'], **send_kwargs)
+                    elif take_data.get('sticker'):
+                        await bot_instance.send_sticker(cfg.takes_channel, sticker=take_data['sticker'])
+                    else:
+                        await bot_instance.send_message(
+                            cfg.takes_channel,
+                            censored if has_profanity else take_data['text'],
+                            parse_mode="HTML" if has_profanity else None
+                        )
+                
                 db.add_take_timestamp(take_data['user_id'], bot_id)
                 del config.pending_takes[take_id]
                 config.save()
@@ -2189,11 +2637,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
         @router.callback_query(F.data.startswith("user_block_"))
         async def block_user_from_takes(callback: types.CallbackQuery):
-            """
-            Блокировка пользователя для тейков.
-            Независима от блокировки объявлений.
-            После блокировки кнопка меняется на 'Разблокировать (тейки)'.
-            """
+            """Блокировка пользователя для тейков."""
             if not check_moderator(callback.from_user.id, bot_id):
                 await callback.answer("Нет доступа", show_alert=True)
                 return
@@ -2203,7 +2647,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 await bot_instance.send_message(uid, "🚫 Вы заблокированы для отправки тейков.")
             except Exception:
                 pass
-            # Обновляем кнопки — показываем кнопку разблокировки
             try:
                 await callback.message.edit_reply_markup(
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -2219,11 +2662,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
         @router.callback_query(F.data.startswith("take_unblock_"))
         async def unblock_user_from_takes(callback: types.CallbackQuery):
-            """
-            Разблокировка пользователя для тейков.
-            Независима от разблокировки объявлений.
-            После разблокировки кнопка меняется на 'Заблокировать (тейки)'.
-            """
+            """Разблокировка пользователя для тейков."""
             if not check_moderator(callback.from_user.id, bot_id):
                 await callback.answer("Нет доступа", show_alert=True)
                 return
@@ -2233,7 +2672,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 await bot_instance.send_message(uid, "✅ Вы разблокированы для тейков.")
             except Exception:
                 pass
-            # Обновляем кнопки — показываем кнопку блокировки
             try:
                 await callback.message.edit_reply_markup(
                     reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -2273,10 +2711,10 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await callback.answer("✅ Разблокирован для тейков", show_alert=True)
 
     dp.include_router(router)
-
 def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     """Обработчики магазина, пиара, админ-панели и канала."""
-    router = Router()
+    # ИСПРАВЛЕНИЕ: Создаём НОВЫЙ роутер для КАЖДОГО бота
+    router = Router(name=f"bot_{bot_id}_shop_admin")
     bot_config = config.bots.get(bot_id)
 
     # =================== МАГАЗИН / ПИАР ===================
@@ -3121,7 +3559,8 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
 def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
     """Обработчики подключения новых ботов (только главный бот)."""
-    router = Router()
+    # ИСПРАВЛЕНИЕ: Создаём НОВЫЙ роутер
+    router = Router(name="connection_handlers")
 
     @router.callback_query(F.data == "connect_bot")
     async def connect_start(callback: types.CallbackQuery, state: FSMContext):
@@ -3455,20 +3894,21 @@ async def main():
     config.active_bots["main"] = main_bot
     config.active_dispatchers["main"] = main_dp
 
-    # Запуск подключённых ботов
+    # ИСПРАВЛЕНИЕ: Запуск подключённых ботов (БЕЗ главного)
     for bot_id, bot_cfg in config.bots.items():
-        if bot_id != "main":
-            try:
-                connected_bot = Bot(token=bot_cfg.token)
-                connected_dp = Dispatcher(storage=MemoryStorage())
-                create_bot_handlers(bot_id, connected_bot, connected_dp)
-                create_shop_admin_handlers(bot_id, connected_bot, connected_dp)
-                config.active_bots[bot_id] = connected_bot
-                config.active_dispatchers[bot_id] = connected_dp
-                asyncio.create_task(connected_dp.start_polling(connected_bot))
-                logger.info(f"Запущен подключённый бот: {bot_id}")
-            except Exception as e:
-                logger.error(f"Ошибка запуска бота {bot_id}: {e}")
+        if bot_id == "main":  # ← ПРОПУСКАЕМ главного бота
+            continue
+        try:
+            connected_bot = Bot(token=bot_cfg.token)
+            connected_dp = Dispatcher(storage=MemoryStorage())
+            create_bot_handlers(bot_id, connected_bot, connected_dp)
+            create_shop_admin_handlers(bot_id, connected_bot, connected_dp)
+            config.active_bots[bot_id] = connected_bot
+            config.active_dispatchers[bot_id] = connected_dp
+            asyncio.create_task(connected_dp.start_polling(connected_bot))
+            logger.info(f"Запущен подключённый бот: {bot_id}")
+        except Exception as e:
+            logger.error(f"Ошибка запуска бота {bot_id}: {e}")
 
     # Восстановление задач удаления пиара после перезапуска
     now = datetime.now()
@@ -3513,7 +3953,6 @@ async def main():
     logger.info(f"Активных задач удаления: {len(config.scheduled_deletions)}")
     logger.info("Запуск главного бота...")
     await main_dp.start_polling(main_bot)
-
 
 if __name__ == "__main__":
     print("🚀 Запуск бота...", flush=True)
