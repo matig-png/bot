@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 # ====================== КОНФИГУРАЦИЯ ======================
 
-MAIN_BOT_TOKEN = "8699376320:AAEA8EamdGIPHYbCI3E2Y_oYvvA1QBYTCzQ"
+MAIN_BOT_TOKEN = "8525998255:AAEFlauob-YKcANq_f4CkAcZ3yV7njjeX8U"
 MAIN_ADMIN_ID = 6098677257
 ADMIN_IDS = {6098677257, 8092280284, 8366347415}
 DB_FILE = "bot_database.db"
