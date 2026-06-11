@@ -4,7 +4,6 @@ import re
 import json
 import os
 import uuid
-import sqlite3
 import sys
 from typing import Dict, Any, List, Tuple, Optional
 from html import escape as html_escape
@@ -19,6 +18,9 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, User, MessageEntity
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+# Supabase
+from supabase import create_client, Client
+
 # ====================== ЛОГИРОВАНИЕ ======================
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -31,17 +33,30 @@ logger = logging.getLogger(__name__)
 
 # ====================== КОНФИГУРАЦИЯ ======================
 
-MAIN_BOT_TOKEN = "8525998255:AAFGc7HXv-AhMQegXpjmGnW0jQ1ZhQuhu_E"
-MAIN_ADMIN_ID = 6098677257
-ADMIN_IDS = {6098677257, 8092280284, 8366347415}
-DB_FILE = "bot_database.db"
-CONFIG_FILE = "bot_config.json"
-MAIN_ANNOUNCEMENT_CHANNEL = "-1003904052294"
+from dotenv import load_dotenv
+import os
 
-# Максимальное количество тейков у пользователя
-MAX_TAKES = 3
-# Время восстановления одного тейка в минутах
-TAKE_COOLDOWN_MINUTES = 3
+# Загружаем переменные из .env
+load_dotenv()
+
+# ====================== КОНФИГУРАЦИЯ ======================
+
+MAIN_BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN")
+MAIN_ADMIN_ID = int(os.getenv("MAIN_ADMIN_ID"))
+ADMIN_IDS = set(map(int, os.getenv("ADMIN_IDS", "").split(",")))
+CONFIG_FILE = "bot_config.json"
+MAIN_ANNOUNCEMENT_CHANNEL = os.getenv("MAIN_ANNOUNCEMENT_CHANNEL")
+
+# Supabase конфигурация
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+MAX_TAKES = int(os.getenv("MAX_TAKES", "3"))
+TAKE_COOLDOWN_MINUTES = int(os.getenv("TAKE_COOLDOWN_MINUTES", "3"))
+
+# Проверка обязательных переменных
+if not MAIN_BOT_TOKEN or not SUPABASE_URL or not SUPABASE_KEY:
+    raise ValueError("❌ Не заданы обязательные переменные окружения! Проверь .env файл")
 
 # Паттерны для аукциона
 BET_PATTERN = re.compile(r'(?:ставлю|ставка)\s+(\d+)', re.IGNORECASE)
@@ -58,124 +73,88 @@ media_group_buffer: Dict[str, Dict[str, Any]] = {}
 MEDIA_GROUP_TIMEOUT = 1.0  # секунды ожидания завершения альбома
 
 
-# ====================== БАЗА ДАННЫХ ======================
+# ====================== БАЗА ДАННЫХ SUPABASE ======================
 
 class Database:
-    """SQLite база данных. Данные пользователей сохраняются между обновлениями бота."""
+    """Supabase база данных. Данные пользователей сохраняются между обновлениями бота."""
 
-    def __init__(self, db_path: str):
-        self.db_path = db_path
-        self.conn = None
+    def __init__(self):
+        self.supabase: Optional[Client] = None
 
     def connect(self):
-        """Подключение и создание таблиц."""
-        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self._create_tables()
-        logger.info(f"База данных подключена: {self.db_path}")
-
-    def _create_tables(self):
-        """Создание всех таблиц если не существуют."""
-        cursor = self.conn.cursor()
-
-        cursor.execute('''CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT NOT NULL DEFAULT '',
-            name TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL DEFAULT ''
-        )''')
-
-        cursor.execute('''CREATE TABLE IF NOT EXISTS balances (
-            user_id INTEGER NOT NULL,
-            bot_id TEXT NOT NULL,
-            balance REAL NOT NULL DEFAULT 0,
-            is_infinite INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (user_id, bot_id)
-        )''')
-
-        cursor.execute('''CREATE TABLE IF NOT EXISTS user_bot_data (
-            user_id INTEGER NOT NULL,
-            bot_id TEXT NOT NULL,
-            quiz_passed INTEGER NOT NULL DEFAULT 0,
-            show_in_top INTEGER NOT NULL DEFAULT 1,
-            is_blocked INTEGER NOT NULL DEFAULT 0,
-            is_frozen INTEGER NOT NULL DEFAULT 0,
-            is_moderator INTEGER NOT NULL DEFAULT 0,
-            is_admin INTEGER NOT NULL DEFAULT 0,
-            is_owner INTEGER NOT NULL DEFAULT 0,
-            activated_at TEXT NOT NULL DEFAULT '',
-            last_promo_at TEXT NOT NULL DEFAULT '',
-            is_announcement_mod INTEGER NOT NULL DEFAULT 0,
-            is_announcement_blocked INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (user_id, bot_id)
-        )''')
-
-        # Обратная совместимость: добавляем колонки если не существуют
+        """Подключение к Supabase."""
         try:
-            cursor.execute('ALTER TABLE user_bot_data ADD COLUMN is_announcement_mod INTEGER NOT NULL DEFAULT 0')
-        except Exception:
-            pass
-        try:
-            cursor.execute('ALTER TABLE user_bot_data ADD COLUMN is_announcement_blocked INTEGER NOT NULL DEFAULT 0')
-        except Exception:
-            pass
-
-        cursor.execute('''CREATE TABLE IF NOT EXISTS take_timestamps (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            bot_id TEXT NOT NULL,
-            timestamp TEXT NOT NULL
-        )''')
-
-        self.conn.commit()
+            self.supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+            logger.info(f"Supabase подключена: {SUPABASE_URL}")
+        except Exception as e:
+            logger.error(f"Ошибка подключения к Supabase: {e}")
+            raise
 
     # --- Пользователи ---
 
     def get_user(self, user_id: int) -> Optional[Dict]:
         """Получить данные пользователя."""
-        cursor = self.conn.cursor()
-        cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
-        row = cursor.fetchone()
-        return dict(row) if row else None
+        try:
+            response = self.supabase.table('users').select('*').eq('user_id', user_id).execute()
+            return response.data[0] if response.data else None
+        except Exception as e:
+            logger.error(f"Ошибка получения пользователя {user_id}: {e}")
+            return None
 
     def create_or_update_user(self, user_id: int, username: str, name: str):
         """Создать или обновить пользователя."""
         now = datetime.now().isoformat()
-        cursor = self.conn.cursor()
-        cursor.execute(
-            'INSERT OR IGNORE INTO users (user_id, username, name, created_at) VALUES (?, ?, ?, ?)',
-            (user_id, username, name, now)
-        )
-        cursor.execute(
-            'UPDATE users SET username = ?, name = ? WHERE user_id = ?',
-            (username, name, user_id)
-        )
-        self.conn.commit()
+        try:
+            existing = self.get_user(user_id)
+            if existing:
+                self.supabase.table('users').update({
+                    'username': username,
+                    'name': name
+                }).eq('user_id', user_id).execute()
+            else:
+                self.supabase.table('users').insert({
+                    'user_id': user_id,
+                    'username': username,
+                    'name': name,
+                    'created_at': now
+                }).execute()
+        except Exception as e:
+            logger.error(f"Ошибка создания/обновления пользователя {user_id}: {e}")
 
     # --- Балансы ---
 
     def get_balance(self, user_id: int, bot_id: str) -> float:
         """Получить баланс пользователя."""
-        cursor = self.conn.cursor()
-        cursor.execute(
-            'SELECT balance, is_infinite FROM balances WHERE user_id = ? AND bot_id = ?',
-            (user_id, bot_id)
-        )
-        row = cursor.fetchone()
-        if not row:
+        try:
+            response = self.supabase.table('balances').select('*').eq('user_id', user_id).eq('bot_id', bot_id).execute()
+            if not response.data:
+                return 0
+            row = response.data[0]
+            return float('inf') if row['is_infinite'] else row['balance']
+        except Exception as e:
+            logger.error(f"Ошибка получения баланса {user_id}/{bot_id}: {e}")
             return 0
-        return float('inf') if row['is_infinite'] else row['balance']
 
     def set_balance(self, user_id: int, bot_id: str, balance: float):
         """Установить баланс."""
-        is_inf = 1 if balance == float('inf') else 0
+        is_inf = balance == float('inf')
         val = 0 if is_inf else balance
-        cursor = self.conn.cursor()
-        cursor.execute(
-            'INSERT OR REPLACE INTO balances (user_id, bot_id, balance, is_infinite) VALUES (?, ?, ?, ?)',
-            (user_id, bot_id, val, is_inf)
-        )
-        self.conn.commit()
+        try:
+            existing = self.supabase.table('balances').select('*').eq('user_id', user_id).eq('bot_id', bot_id).execute()
+            if existing.data:
+                self.supabase.table('balances').update({
+                    'balance': val,
+                    'is_infinite': is_inf
+                }).eq('user_id', user_id).eq('bot_id', bot_id).execute()
+            else:
+                self.supabase.table('balances').insert({
+                    'user_id': user_id,
+                    'bot_id': bot_id,
+                    'balance': val,
+                    'is_infinite': is_inf
+                }).execute()
+        except Exception as e:
+            logger.error(f"Ошибка установки баланса {user_id}/{bot_id}: {e}")
 
     def add_balance(self, user_id: int, bot_id: str, amount: float) -> bool:
         """Добавить к балансу."""
@@ -199,77 +178,118 @@ class Database:
 
     def get_bot_data(self, user_id: int, bot_id: str) -> Dict:
         """Получить данные пользователя для конкретного бота."""
-        cursor = self.conn.cursor()
-        cursor.execute(
-            'SELECT * FROM user_bot_data WHERE user_id = ? AND bot_id = ?',
-            (user_id, bot_id)
-        )
-        row = cursor.fetchone()
-        if row:
-            return dict(row)
-        return {
-            'user_id': user_id, 'bot_id': bot_id,
-            'quiz_passed': 0, 'show_in_top': 1,
-            'is_blocked': 0, 'is_frozen': 0,
-            'is_moderator': 0, 'is_admin': 0, 'is_owner': 0,
-            'activated_at': '', 'last_promo_at': '',
-            'is_announcement_mod': 0,
-            'is_announcement_blocked': 0
-        }
+        try:
+            response = self.supabase.table('user_bot_data').select('*').eq('user_id', user_id).eq('bot_id', bot_id).execute()
+            if response.data:
+                return response.data[0]
+            return {
+                'user_id': user_id, 'bot_id': bot_id,
+                'quiz_passed': False, 'show_in_top': True,
+                'is_blocked': False, 'is_frozen': False,
+                'is_moderator': False, 'is_admin': False, 'is_owner': False,
+                'activated_at': '', 'last_promo_at': '',
+                'is_announcement_mod': False,
+                'is_announcement_blocked': False
+            }
+        except Exception as e:
+            logger.error(f"Ошибка получения bot_data {user_id}/{bot_id}: {e}")
+            return {
+                'user_id': user_id, 'bot_id': bot_id,
+                'quiz_passed': False, 'show_in_top': True,
+                'is_blocked': False, 'is_frozen': False,
+                'is_moderator': False, 'is_admin': False, 'is_owner': False,
+                'activated_at': '', 'last_promo_at': '',
+                'is_announcement_mod': False,
+                'is_announcement_blocked': False
+            }
 
     def set_bot_data(self, user_id: int, bot_id: str, **kwargs):
         """Обновить данные пользователя для бота."""
-        existing = self.get_bot_data(user_id, bot_id)
-        existing.update(kwargs)
-        cursor = self.conn.cursor()
-        cursor.execute('''INSERT OR REPLACE INTO user_bot_data
-            (user_id, bot_id, quiz_passed, show_in_top, is_blocked, is_frozen,
-             is_moderator, is_admin, is_owner, activated_at, last_promo_at,
-             is_announcement_mod, is_announcement_blocked)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-            (user_id, bot_id, existing['quiz_passed'], existing['show_in_top'],
-             existing['is_blocked'], existing['is_frozen'], existing['is_moderator'],
-             existing['is_admin'], existing['is_owner'], existing['activated_at'],
-             existing['last_promo_at'], existing.get('is_announcement_mod', 0),
-             existing.get('is_announcement_blocked', 0)))
-        self.conn.commit()
+        try:
+            existing = self.supabase.table('user_bot_data').select('*').eq('user_id', user_id).eq('bot_id', bot_id).execute()
+            
+            data = {
+                'user_id': user_id,
+                'bot_id': bot_id,
+                'quiz_passed': kwargs.get('quiz_passed', False),
+                'show_in_top': kwargs.get('show_in_top', True),
+                'is_blocked': kwargs.get('is_blocked', False),
+                'is_frozen': kwargs.get('is_frozen', False),
+                'is_moderator': kwargs.get('is_moderator', False),
+                'is_admin': kwargs.get('is_admin', False),
+                'is_owner': kwargs.get('is_owner', False),
+                'activated_at': kwargs.get('activated_at', ''),
+                'last_promo_at': kwargs.get('last_promo_at', ''),
+                'is_announcement_mod': kwargs.get('is_announcement_mod', False),
+                'is_announcement_blocked': kwargs.get('is_announcement_blocked', False)
+            }
+            
+            if existing.data:
+                # Обновляем существующие данные
+                current = existing.data[0]
+                for key, value in data.items():
+                    if key not in ['user_id', 'bot_id']:
+                        if key in kwargs:
+                            current[key] = value
+                self.supabase.table('user_bot_data').update(current).eq('user_id', user_id).eq('bot_id', bot_id).execute()
+            else:
+                self.supabase.table('user_bot_data').insert(data).execute()
+        except Exception as e:
+            logger.error(f"Ошибка установки bot_data {user_id}/{bot_id}: {e}")
 
     # --- Тейки ---
 
     def get_take_timestamps(self, user_id: int, bot_id: str, since: datetime) -> List[str]:
         """Получить все временные метки тейков начиная с указанного времени."""
-        cursor = self.conn.cursor()
-        cursor.execute(
-            'SELECT timestamp FROM take_timestamps WHERE user_id = ? AND bot_id = ? AND timestamp > ? ORDER BY timestamp DESC',
-            (user_id, bot_id, since.isoformat())
-        )
-        return [row['timestamp'] for row in cursor.fetchall()]
+        try:
+            response = self.supabase.table('take_timestamps').select('timestamp').eq('user_id', user_id).eq('bot_id', bot_id).gt('timestamp', since.isoformat()).order('timestamp', desc=True).execute()
+            return [row['timestamp'] for row in response.data]
+        except Exception as e:
+            logger.error(f"Ошибка получения timestamps {user_id}/{bot_id}: {e}")
+            return []
 
     def add_take_timestamp(self, user_id: int, bot_id: str):
         """Записать время отправки тейка."""
-        cursor = self.conn.cursor()
-        cursor.execute(
-            'INSERT INTO take_timestamps (user_id, bot_id, timestamp) VALUES (?, ?, ?)',
-            (user_id, bot_id, datetime.now().isoformat())
-        )
-        cursor.execute('''DELETE FROM take_timestamps WHERE id NOT IN (
-            SELECT id FROM take_timestamps WHERE user_id = ? AND bot_id = ? ORDER BY id DESC LIMIT 20
-        ) AND user_id = ? AND bot_id = ?''', (user_id, bot_id, user_id, bot_id))
-        self.conn.commit()
+        try:
+            now = datetime.now().isoformat()
+            self.supabase.table('take_timestamps').insert({
+                'user_id': user_id,
+                'bot_id': bot_id,
+                'timestamp': now
+            }).execute()
+            
+            # Очистка старых записей (оставляем последние 20)
+            all_records = self.supabase.table('take_timestamps').select('id').eq('user_id', user_id).eq('bot_id', bot_id).order('id', desc=True).execute()
+            if len(all_records.data) > 20:
+                ids_to_keep = [r['id'] for r in all_records.data[:20]]
+                self.supabase.table('take_timestamps').delete().eq('user_id', user_id).eq('bot_id', bot_id).not_.in_('id', ids_to_keep).execute()
+        except Exception as e:
+            logger.error(f"Ошибка добавления timestamp {user_id}/{bot_id}: {e}")
 
     # --- Списки ---
 
     def get_all_users_for_bot(self, bot_id: str) -> List[Dict]:
         """Все пользователи с балансами в конкретном боте."""
-        cursor = self.conn.cursor()
-        cursor.execute('''SELECT u.user_id, u.username, u.name,
-                     COALESCE(b.balance, 0) as balance, COALESCE(b.is_infinite, 0) as is_infinite,
-                     COALESCE(d.show_in_top, 1) as show_in_top, COALESCE(d.is_owner, 0) as is_owner
-                     FROM users u
-                     LEFT JOIN balances b ON u.user_id = b.user_id AND b.bot_id = ?
-                     LEFT JOIN user_bot_data d ON u.user_id = d.user_id AND d.bot_id = ?
-                     WHERE b.balance IS NOT NULL OR b.is_infinite = 1''', (bot_id, bot_id))
-        return [dict(row) for row in cursor.fetchall()]
+        try:
+            response = self.supabase.table('balances').select('user_id, balance, is_infinite').eq('bot_id', bot_id).execute()
+            result = []
+            for row in response.data:
+                user = self.get_user(row['user_id'])
+                bot_data = self.get_bot_data(row['user_id'], bot_id)
+                if user:
+                    result.append({
+                        'user_id': row['user_id'],
+                        'username': user.get('username', ''),
+                        'name': user.get('name', ''),
+                        'balance': row['balance'],
+                        'is_infinite': row['is_infinite'],
+                        'show_in_top': bot_data.get('show_in_top', True),
+                        'is_owner': bot_data.get('is_owner', False)
+                    })
+            return result
+        except Exception as e:
+            logger.error(f"Ошибка получения пользователей для бота {bot_id}: {e}")
+            return []
 
     def find_user_by_input(self, input_str: str) -> Optional[int]:
         """Найти пользователя по username, имени или ID."""
@@ -280,16 +300,18 @@ class Database:
                 return uid
         except ValueError:
             pass
-        cursor = self.conn.cursor()
-        cursor.execute(
-            'SELECT user_id FROM users WHERE LOWER(username) = ? OR LOWER(name) = ?',
-            (input_str, input_str)
-        )
-        row = cursor.fetchone()
-        return row['user_id'] if row else None
+        
+        try:
+            response = self.supabase.table('users').select('user_id').or_(f'username.ilike.%{input_str}%,name.ilike.%{input_str}%').execute()
+            if response.data:
+                return response.data[0]['user_id']
+        except Exception as e:
+            logger.error(f"Ошибка поиска пользователя {input_str}: {e}")
+        
+        return None
 
 
-db = Database(DB_FILE)
+db = Database()
 
 
 # ====================== КОНФИГУРАЦИЯ БОТОВ (JSON) ======================
@@ -607,10 +629,10 @@ def register_user(user: User, bot_id: str):
             db.set_balance(uid, bot_id, 0)
 
         db.set_bot_data(uid, bot_id,
-            quiz_passed=0, show_in_top=1, is_blocked=0, is_frozen=0,
-            is_moderator=0, is_announcement_mod=0, is_announcement_blocked=0,
-            is_admin=1 if (is_admin_flag or is_owner_flag or is_main_owner) else 0,
-            is_owner=1 if (is_owner_flag or is_main_owner) else 0,
+            quiz_passed=False, show_in_top=True, is_blocked=False, is_frozen=False,
+            is_moderator=False, is_announcement_mod=False, is_announcement_blocked=False,
+            is_admin=(is_admin_flag or is_owner_flag or is_main_owner),
+            is_owner=(is_owner_flag or is_main_owner),
             activated_at=datetime.now().isoformat(),
             last_promo_at=''
         )
@@ -642,7 +664,7 @@ def check_announcement_moderator(uid: int, bot_id: str) -> bool:
 def check_announcement_blocked(uid: int, bot_id: str) -> bool:
     """Заблокирован ли пользователь для объявлений (независимо от тейков)."""
     data = db.get_bot_data(uid, bot_id)
-    return bool(data.get('is_announcement_blocked', 0))
+    return bool(data.get('is_announcement_blocked', False))
 
 
 def can_send_take(uid: int, bot_id: str) -> Tuple[bool, int, str]:
@@ -1112,7 +1134,6 @@ def build_quiz_keyboard(question_num: int) -> InlineKeyboardMarkup:
         builder.row(InlineKeyboardButton(text=answer, callback_data=f"quiz_{question_num}_{i}"))
     return builder.as_markup()
 
-
 # ====================== НОВОЕ: ОБРАБОТКА МЕДИАГРУПП ======================
 
 async def forward_take_to_channel(message: types.Message, bot_id: str, bot_instance: Bot) -> Optional[types.Message]:
@@ -1127,6 +1148,7 @@ async def forward_take_to_channel(message: types.Message, bot_id: str, bot_insta
             return None
 
         text = message.text or message.caption or ""
+        entities = message.entities or message.caption_entities
 
         # Для главного бота добавляем подпись после #тейк
         if bot_id == "main":
@@ -1143,6 +1165,7 @@ async def forward_take_to_channel(message: types.Message, bot_id: str, bot_insta
         send_kwargs = {
             "caption": censored if has_profanity else text,
             "parse_mode": "HTML" if has_profanity else None,
+            "caption_entities": entities if not has_profanity else None
         }
 
         if message.photo:
@@ -1193,7 +1216,8 @@ async def forward_take_to_channel(message: types.Message, bot_id: str, bot_insta
             return await bot_instance.send_message(
                 bot_cfg.takes_channel,
                 censored if has_profanity else text,
-                parse_mode="HTML" if has_profanity else None
+                parse_mode="HTML" if has_profanity else None,
+                entities=entities if not has_profanity else None
             )
     except Exception as e:
         logger.error(f"Ошибка пересылки тейка: {e}")
@@ -1720,7 +1744,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         cfg = config.bots.get(bot_id)
         if int(callback.data.split("_")[2]) == BUILT_IN_QUIZ[3]["correct"]:
             db.add_balance(callback.from_user.id, bot_id, cfg.quiz_reward)
-            db.set_bot_data(callback.from_user.id, bot_id, quiz_passed=1)
+            db.set_bot_data(callback.from_user.id, bot_id, quiz_passed=True)
             total_reward = cfg.quiz_reward * 3
             await callback.message.edit_text(
                 f"🎉 Викторина пройдена!\n+{total_reward} {cfg.currency_emoji}",
@@ -1827,6 +1851,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                         'photo': msg.photo[-1].file_id if msg.photo else None,
                         'video': msg.video.file_id if msg.video else None,
                         'caption': msg.caption if hasattr(msg, 'caption') else None,
+                        'caption_entities': serialize_entities(msg.caption_entities if hasattr(msg, 'caption_entities') else None),
                         'has_spoiler': getattr(msg, 'has_media_spoiler', False)
                     }
                     for msg in messages
@@ -1869,18 +1894,21 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 media_group = []
                 for idx, msg in enumerate(messages):
                     text = msg.caption or "" if idx == 0 else ""
+                    entities = msg.caption_entities if (idx == 0 and hasattr(msg, 'caption_entities')) else None
                     has_spoiler = getattr(msg, 'has_media_spoiler', False)
                     
                     if msg.photo:
                         media_group.append(InputMediaPhoto(
                             media=msg.photo[-1].file_id,
                             caption=text,
+                            caption_entities=entities,
                             has_spoiler=has_spoiler
                         ))
                     elif msg.video:
                         media_group.append(InputMediaVideo(
                             media=msg.video.file_id,
                             caption=text,
+                            caption_entities=entities,
                             has_spoiler=has_spoiler
                         ))
                 
@@ -2007,18 +2035,21 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 media_group = []
                 for idx, media_info in enumerate(ann_data['media_group']):
                     text = media_info.get('caption', '') if idx == 0 else ""
+                    entities = restore_entities(media_info.get('caption_entities')) if idx == 0 else None
                     has_spoiler = media_info.get('has_spoiler', False)
                     
                     if media_info.get('photo'):
                         media_group.append(InputMediaPhoto(
                             media=media_info['photo'],
                             caption=text,
+                            caption_entities=entities,
                             has_spoiler=has_spoiler
                         ))
                     elif media_info.get('video'):
                         media_group.append(InputMediaVideo(
                             media=media_info['video'],
                             caption=text,
+                            caption_entities=entities,
                             has_spoiler=has_spoiler
                         ))
                 
@@ -2069,7 +2100,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         parts = callback.data[10:].split("_", 1)
         uid = int(parts[0])
         ann_id = parts[1] if len(parts) > 1 else ""
-        db.set_bot_data(uid, bot_id, is_announcement_blocked=1)
+        db.set_bot_data(uid, bot_id, is_announcement_blocked=True)
         try:
             await bot_instance.send_message(uid, "🚫 Вы заблокированы для отправки объявлений.")
         except Exception:
@@ -2091,7 +2122,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         parts = callback.data[12:].split("_", 1)
         uid = int(parts[0])
         ann_id = parts[1] if len(parts) > 1 else ""
-        db.set_bot_data(uid, bot_id, is_announcement_blocked=0)
+        db.set_bot_data(uid, bot_id, is_announcement_blocked=False)
         try:
             await bot_instance.send_message(uid, "✅ Вы разблокированы для объявлений.")
         except Exception:
@@ -2187,6 +2218,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                             'photo': msg.photo[-1].file_id if msg.photo else None,
                             'video': msg.video.file_id if msg.video else None,
                             'caption': msg.caption if hasattr(msg, 'caption') else None,
+                            'caption_entities': serialize_entities(msg.caption_entities if hasattr(msg, 'caption_entities') else None),
                             'has_spoiler': getattr(msg, 'has_media_spoiler', False)
                         }
                         for msg in messages
@@ -2234,6 +2266,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                             'photo': msg.photo[-1].file_id if msg.photo else None,
                             'video': msg.video.file_id if msg.video else None,
                             'caption': msg.caption if hasattr(msg, 'caption') else None,
+                            'caption_entities': serialize_entities(msg.caption_entities if hasattr(msg, 'caption_entities') else None),
                             'has_spoiler': getattr(msg, 'has_media_spoiler', False)
                         }
                         for msg in messages
@@ -2241,7 +2274,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 }
                 config.save()
                 
-                is_blocked_flag = bool(db.get_bot_data(user_id, bid).get('is_blocked', 0))
+                is_blocked_flag = bool(db.get_bot_data(user_id, bid).get('is_blocked', False))
                 all_users = db.get_all_users_for_bot(bid)
                 for user in all_users:
                     mod_uid = user['user_id']
@@ -2278,6 +2311,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     media_group = []
                     for idx, msg in enumerate(messages):
                         text_caption = msg.caption or "" if idx == 0 else ""
+                        entities = msg.caption_entities if (idx == 0 and hasattr(msg, 'caption_entities')) else None
                         
                         # Для главного бота добавляем подпись
                         if bid == "main" and idx == 0 and text_caption:
@@ -2294,6 +2328,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                                 media=msg.photo[-1].file_id,
                                 caption=censored if (idx == 0 and has_prof) else (text_caption if idx == 0 else ""),
                                 parse_mode="HTML" if (idx == 0 and has_prof) else None,
+                                caption_entities=entities if (idx == 0 and not has_prof) else None,
                                 has_spoiler=has_spoiler
                             ))
                         elif msg.video:
@@ -2301,17 +2336,48 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                                 media=msg.video.file_id,
                                 caption=censored if (idx == 0 and has_prof) else (text_caption if idx == 0 else ""),
                                 parse_mode="HTML" if (idx == 0 and has_prof) else None,
+                                caption_entities=entities if (idx == 0 and not has_prof) else None,
                                 has_spoiler=has_spoiler
                             ))
                     
-                    await bot.send_media_group(cfg.takes_channel, media_group)
+                    sent_messages = await bot.send_media_group(cfg.takes_channel, media_group)
                     db.add_take_timestamp(user_id, bid)
                     _, new_remaining, new_msg = can_send_take(user_id, bid)
-                    await bot.send_message(
-                        user_id,
-                        f"✅ Тейк отправлен в канал!\n📝 {new_msg}",
-                        reply_markup=build_main_menu(bid)
-                    )
+                    
+                    try:
+                        await bot.send_message(
+                            user_id,
+                            f"✅ Тейк отправлен в канал!\n📝 {new_msg}",
+                            reply_markup=build_main_menu(bid)
+                        )
+                    except Exception:
+                        pass
+                    
+                    # НОВОЕ: Отправляем админам/модераторам с кнопкой "Удалить"
+                    if sent_messages:
+                        channel_msg_id = sent_messages[0].message_id
+                        is_blocked_flag = bool(db.get_bot_data(user_id, bid).get('is_blocked', False))
+                        
+                        all_users = db.get_all_users_for_bot(bid)
+                        for user in all_users:
+                            mod_uid = user['user_id']
+                            if check_moderator(mod_uid, bid):
+                                try:
+                                    if is_blocked_flag:
+                                        published_kb = build_published_take_keyboard_blocked(channel_msg_id, user_id)
+                                    else:
+                                        published_kb = build_published_take_keyboard(channel_msg_id, user_id, False)
+                                    await bot.send_message(
+                                        mod_uid,
+                                        f"📝 Тейк-альбом опубликован в канале ({len(messages)} медиа)",
+                                        reply_markup=published_kb
+                                    )
+                                    # Пересылаем все медиа модератору
+                                    for msg in messages:
+                                        await msg.copy_to(mod_uid)
+                                except Exception as e:
+                                    logger.error(f"Ошибка отправки модератору {mod_uid}: {e}")
+                    
                     logger.info(f"Тейк-альбом от {user_id} опубликован: {len(messages)} медиа")
                 except Exception as e:
                     logger.error(f"Ошибка публикации тейка-альбома: {e}")
@@ -2349,6 +2415,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     'animation': message.animation.file_id if message.animation else None,
                     'document': message.document.file_id if message.document else None,
                     'caption': message.caption,
+                    'caption_entities': serialize_entities(message.caption_entities if hasattr(message, 'caption_entities') else None),
                     'timestamp': datetime.now().isoformat()
                 }
                 if bid not in config.paused_takes:
@@ -2387,11 +2454,12 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     'voice': message.voice.file_id if message.voice else None,
                     'audio': message.audio.file_id if message.audio else None,
                     'sticker': message.sticker.file_id if message.sticker else None,
-                    'caption': message.caption
+                    'caption': message.caption,
+                    'caption_entities': serialize_entities(message.caption_entities if hasattr(message, 'caption_entities') else None)
                 }
                 config.save()
 
-                is_blocked_flag = bool(db.get_bot_data(uid, bid).get('is_blocked', 0))
+                is_blocked_flag = bool(db.get_bot_data(uid, bid).get('is_blocked', False))
                 all_users = db.get_all_users_for_bot(bid)
                 for user in all_users:
                     mod_uid = user['user_id']
@@ -2422,8 +2490,9 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                         reply_markup=build_main_menu(bid)
                     )
 
+                    # НОВОЕ: Отправляем админам/модераторам с кнопкой "Удалить"
                     channel_msg_id = sent.message_id
-                    is_blocked_flag = bool(db.get_bot_data(uid, bid).get('is_blocked', 0))
+                    is_blocked_flag = bool(db.get_bot_data(uid, bid).get('is_blocked', False))
 
                     all_users = db.get_all_users_for_bot(bid)
                     for user in all_users:
@@ -2534,6 +2603,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     media_group = []
                     for idx, media_info in enumerate(take_data['media_group']):
                         text = media_info.get('caption', '') if idx == 0 else ""
+                        entities = restore_entities(media_info.get('caption_entities')) if idx == 0 else None
                         
                         # Для главного бота добавляем подпись
                         if take_data['bot_id'] == "main" and idx == 0 and text:
@@ -2550,6 +2620,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                                 media=media_info['photo'],
                                 caption=censored if (idx == 0 and has_prof) else (text if idx == 0 else ""),
                                 parse_mode="HTML" if (idx == 0 and has_prof) else None,
+                                caption_entities=entities if (idx == 0 and not has_prof) else None,
                                 has_spoiler=has_spoiler
                             ))
                         elif media_info.get('video'):
@@ -2557,6 +2628,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                                 media=media_info['video'],
                                 caption=censored if (idx == 0 and has_prof) else (text if idx == 0 else ""),
                                 parse_mode="HTML" if (idx == 0 and has_prof) else None,
+                                caption_entities=entities if (idx == 0 and not has_prof) else None,
                                 has_spoiler=has_spoiler
                             ))
                     
@@ -2565,10 +2637,12 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 else:
                     # Одиночный тейк
                     text = take_data.get('caption') or take_data.get('text', '')
+                    entities = restore_entities(take_data.get('caption_entities'))
                     censored, has_profanity = censor_profanity(text, bot_id)
                     send_kwargs = {
                         "caption": censored if has_profanity else text,
-                        "parse_mode": "HTML" if has_profanity else None
+                        "parse_mode": "HTML" if has_profanity else None,
+                        "caption_entities": entities if not has_profanity else None
                     }
                     if take_data.get('photo'):
                         await bot_instance.send_photo(cfg.takes_channel, photo=take_data['photo'], **send_kwargs)
@@ -2588,7 +2662,8 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                         await bot_instance.send_message(
                             cfg.takes_channel,
                             censored if has_profanity else take_data['text'],
-                            parse_mode="HTML" if has_profanity else None
+                            parse_mode="HTML" if has_profanity else None,
+                            entities=entities if not has_profanity else None
                         )
                 
                 db.add_take_timestamp(take_data['user_id'], bot_id)
@@ -2642,7 +2717,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 await callback.answer("Нет доступа", show_alert=True)
                 return
             uid = int(callback.data[11:])
-            db.set_bot_data(uid, bot_id, is_blocked=1)
+            db.set_bot_data(uid, bot_id, is_blocked=True)
             try:
                 await bot_instance.send_message(uid, "🚫 Вы заблокированы для отправки тейков.")
             except Exception:
@@ -2667,7 +2742,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 await callback.answer("Нет доступа", show_alert=True)
                 return
             uid = int(callback.data[13:])
-            db.set_bot_data(uid, bot_id, is_blocked=0)
+            db.set_bot_data(uid, bot_id, is_blocked=False)
             try:
                 await bot_instance.send_message(uid, "✅ Вы разблокированы для тейков.")
             except Exception:
@@ -2692,7 +2767,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 await callback.answer("Нет доступа", show_alert=True)
                 return
             uid = int(callback.data[13:])
-            db.set_bot_data(uid, bot_id, is_blocked=0)
+            db.set_bot_data(uid, bot_id, is_blocked=False)
             try:
                 await bot_instance.send_message(uid, "✅ Вы разблокированы для тейков.")
             except Exception:
@@ -2711,6 +2786,8 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await callback.answer("✅ Разблокирован для тейков", show_alert=True)
 
     dp.include_router(router)
+
+
 def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     """Обработчики магазина, пиара, админ-панели и канала."""
     # ИСПРАВЛЕНИЕ: Создаём НОВЫЙ роутер для КАЖДОГО бота
@@ -2859,7 +2936,9 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await callback.message.edit_caption(caption="❌ Продажа отклонена")
             await callback.answer()
 
-    # =================== АДМИН-ПАНЕЛЬ ===================
+    dp.include_router(router)
+
+# =================== АДМИН-ПАНЕЛЬ ===================
 
     @router.callback_query(F.data == "adm_users")
     async def admin_users_list(callback: types.CallbackQuery):
@@ -2938,7 +3017,7 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     async def admin_freeze_process(message: types.Message, state: FSMContext):
         uid = db.find_user_by_input(message.text)
         if uid:
-            db.set_bot_data(uid, bot_id, is_frozen=1)
+            db.set_bot_data(uid, bot_id, is_frozen=True)
             await message.answer("❄️ Счёт заморожен.", reply_markup=build_admin_menu(message.from_user.id, bot_id))
         else:
             await message.answer("Пользователь не найден.", reply_markup=build_cancel_keyboard())
@@ -2957,7 +3036,7 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     async def admin_unfreeze_process(message: types.Message, state: FSMContext):
         uid = db.find_user_by_input(message.text)
         if uid:
-            db.set_bot_data(uid, bot_id, is_frozen=0)
+            db.set_bot_data(uid, bot_id, is_frozen=False)
             await message.answer("🔥 Счёт разморожен.", reply_markup=build_admin_menu(message.from_user.id, bot_id))
         else:
             await message.answer("Пользователь не найден.", reply_markup=build_cancel_keyboard())
@@ -2981,9 +3060,11 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 else:
                     try:
                         censored, has_prof = censor_profanity(text, bot_id)
+                        entities = restore_entities(take.get('caption_entities'))
                         send_kwargs = {
                             "caption": censored if has_prof else text,
-                            "parse_mode": "HTML" if has_prof else None
+                            "parse_mode": "HTML" if has_prof else None,
+                            "caption_entities": entities if not has_prof else None
                         }
                         if take.get('photo'):
                             await bot_instance.send_photo(cfg.takes_channel, photo=take['photo'], **send_kwargs)
@@ -2993,7 +3074,8 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                             await bot_instance.send_message(
                                 cfg.takes_channel,
                                 censored if has_prof else text,
-                                parse_mode="HTML" if has_prof else None
+                                parse_mode="HTML" if has_prof else None,
+                                entities=entities if not has_prof else None
                             )
                         sent_count += 1
                     except Exception as e:
@@ -3216,7 +3298,7 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     async def mod_assign_process(message: types.Message, state: FSMContext):
         uid = db.find_user_by_input(message.text)
         if uid:
-            db.set_bot_data(uid, bot_id, is_moderator=1)
+            db.set_bot_data(uid, bot_id, is_moderator=True)
             await message.answer("✅ Назначен модератором тейков.", reply_markup=build_mods_menu())
         else:
             await message.answer("Пользователь не найден.", reply_markup=build_cancel_keyboard())
@@ -3232,7 +3314,7 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     async def mod_remove_process(message: types.Message, state: FSMContext):
         uid = db.find_user_by_input(message.text)
         if uid:
-            db.set_bot_data(uid, bot_id, is_moderator=0)
+            db.set_bot_data(uid, bot_id, is_moderator=False)
             await message.answer("✅ Снят с модераторов тейков.", reply_markup=build_mods_menu())
         else:
             await message.answer("Пользователь не найден.", reply_markup=build_cancel_keyboard())
@@ -3278,7 +3360,7 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     async def announcement_mod_assign_process(message: types.Message, state: FSMContext):
         uid = db.find_user_by_input(message.text)
         if uid:
-            db.set_bot_data(uid, bot_id, is_announcement_mod=1)
+            db.set_bot_data(uid, bot_id, is_announcement_mod=True)
             await message.answer(
                 "✅ Назначен модератором объявлений.\n"
                 "Теперь все объявления будут приходить ему на проверку.",
@@ -3298,7 +3380,7 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     async def announcement_mod_remove_process(message: types.Message, state: FSMContext):
         uid = db.find_user_by_input(message.text)
         if uid:
-            db.set_bot_data(uid, bot_id, is_announcement_mod=0)
+            db.set_bot_data(uid, bot_id, is_announcement_mod=False)
             await message.answer("✅ Снят с модераторов объявлений.", reply_markup=build_announcement_mods_menu())
         else:
             await message.answer("Пользователь не найден.", reply_markup=build_cancel_keyboard())
@@ -3340,7 +3422,7 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 return
             users_list = db.get_all_users_for_bot(bot_id)
             for user in users_list:
-                db.set_bot_data(user['user_id'], bot_id, show_in_top=0)
+                db.set_bot_data(user['user_id'], bot_id, show_in_top=False)
             await callback.answer("✅ Топ сброшен.", show_alert=True)
             await callback.message.edit_text("Админ-панель:", reply_markup=build_admin_menu(callback.from_user.id, bot_id))
 
@@ -3824,7 +3906,7 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
             db.set_balance(req.user_id, new_bot_id, float('inf'))
             db.set_bot_data(
                 req.user_id, new_bot_id,
-                is_owner=1, is_admin=1,
+                is_owner=True, is_admin=True,
                 activated_at=datetime.now().isoformat()
             )
 
