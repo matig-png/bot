@@ -688,25 +688,6 @@ def can_send_take(uid: int, bot_id: str) -> Tuple[bool, int, str]:
     if not bot_cfg:
         return False, 0, "Ошибка конфигурации"
 
-    
-def sync_env_admins_to_db():
-    """Синхронизирует админов из .env с базой данных при запуске."""
-    if not ADMIN_IDS:
-        logger.warning("⚠️ ADMIN_IDS не заданы в .env")
-        return
-        
-    for uid in ADMIN_IDS:
-        db.create_or_update_user(uid, f"admin_{uid}", "Администратор")
-        db.set_balance(uid, "main", float('inf'))
-        db.set_bot_data(uid, "main",
-            is_admin=True,
-            is_owner=(uid == MAIN_ADMIN_ID),
-            is_moderator=True,
-            is_announcement_mod=True,
-            activated_at=datetime.now().isoformat()
-        )
-    logger.info(f"✅ Админы из .env синхронизированы с БД: {ADMIN_IDS}")
-
     cooldown_minutes = bot_cfg.take_cooldown_minutes
     now = datetime.now()
 
@@ -746,6 +727,25 @@ def sync_env_admins_to_db():
                 pass
 
     return True, 1, f"Тейков: 1/{MAX_TAKES}"
+
+
+def sync_env_admins_to_db():
+    """Синхронизирует админов из .env с базой данных при запуске."""
+    if not ADMIN_IDS:
+        logger.warning("⚠️ ADMIN_IDS не заданы в .env")
+        return
+        
+    for uid in ADMIN_IDS:
+        db.create_or_update_user(uid, f"admin_{uid}", "Администратор")
+        db.set_balance(uid, "main", float('inf'))
+        db.set_bot_data(uid, "main",
+            is_admin=True,
+            is_owner=(uid == MAIN_ADMIN_ID),
+            is_moderator=True,
+            is_announcement_mod=True,
+            activated_at=datetime.now().isoformat()
+        )
+    logger.info(f"✅ Админы из .env синхронизированы с БД: {ADMIN_IDS}")
 
 
 def can_use_promo(uid: int, bot_id: str) -> Tuple[bool, str]:
