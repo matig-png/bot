@@ -3973,23 +3973,31 @@ async def main():
     # Главный бот
     main_bot = Bot(token=MAIN_BOT_TOKEN)
     main_dp = Dispatcher(storage=MemoryStorage())
+    
+    # ИСПРАВЛЕНИЕ: Создаём обработчики ТОЛЬКО ОДИН РАЗ
     create_bot_handlers("main", main_bot, main_dp)
     create_shop_admin_handlers("main", main_bot, main_dp)
     create_connection_handlers(main_bot, main_dp)
+    
     config.active_bots["main"] = main_bot
     config.active_dispatchers["main"] = main_dp
 
     # ИСПРАВЛЕНИЕ: Запуск подключённых ботов (БЕЗ главного)
     for bot_id, bot_cfg in config.bots.items():
-        if bot_id == "main":  # ← ПРОПУСКАЕМ главного бота
+        if bot_id == "main":  # ← ПРОПУСКАЕМ главного бота (уже создан выше)
             continue
         try:
             connected_bot = Bot(token=bot_cfg.token)
             connected_dp = Dispatcher(storage=MemoryStorage())
+            
+            # Создаём обработчики для подключённого бота
             create_bot_handlers(bot_id, connected_bot, connected_dp)
             create_shop_admin_handlers(bot_id, connected_bot, connected_dp)
+            
             config.active_bots[bot_id] = connected_bot
             config.active_dispatchers[bot_id] = connected_dp
+            
+            # Запускаем подключённый бот в фоне
             asyncio.create_task(connected_dp.start_polling(connected_bot))
             logger.info(f"Запущен подключённый бот: {bot_id}")
         except Exception as e:
