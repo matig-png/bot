@@ -3970,11 +3970,89 @@ async def main():
         logger.info(f"Канал объявлений главного бота: '{main_cfg.announcement_channel}'")
         logger.info(f"Лимит тейков: {MAX_TAKES} шт, восстановление каждые {TAKE_COOLDOWN_MINUTES} мин")
 
+    # ===== НОВОЕ: Автоматическая регистрация админов из переменных окружения =====
+    logger.info("Регистрация админов из переменных окружения...")
+    
+    # 1. Главный админ (владелец)
+    main_owner_data = db.get_bot_data(MAIN_ADMIN_ID, "main")
+    if not main_owner_data.get('is_owner'):
+        # Создаём запись о главном админе если его нет
+        existing_user = db.get_user(MAIN_ADMIN_ID)
+        if not existing_user:
+            db.create_or_update_user(MAIN_ADMIN_ID, f"admin{MAIN_ADMIN_ID}", "Главный админ")
+        
+        db.set_balance(MAIN_ADMIN_ID, "main", float('inf'))
+        db.set_bot_data(MAIN_ADMIN_ID, "main",
+            quiz_passed=False, show_in_top=False,
+            is_blocked=False, is_frozen=False,
+            is_moderator=True, is_announcement_mod=True,
+            is_announcement_blocked=False,
+            is_admin=True, is_owner=True,
+            activated_at=datetime.now().isoformat(),
+            last_promo_at=None
+        )
+        logger.info(f"✅ Главный админ {MAIN_ADMIN_ID} зарегистрирован")
+    else:
+        logger.info(f"✅ Главный админ {MAIN_ADMIN_ID} уже зарегистрирован")
+    
+    # 2. Остальные админы
+    for admin_id in ADMIN_IDS:
+        if admin_id == MAIN_ADMIN_ID:
+            continue  # Главного админа уже зарегистрировали
+        
+        admin_data = db.get_bot_data(admin_id, "main")
+        if not admin_data.get('is_admin'):
+            # Создаём запись об админе если его нет
+            existing_user = db.get_user(admin_id)
+            if not existing_user:
+                db.create_or_update_user(admin_id, f"admin{admin_id}", f"Админ {admin_id}")
+            
+            # Даём стартовый баланс если ещё нет
+            current_balance = db.get_balance(admin_id, "main")
+            if current_balance == 0:
+                starting_balance = main_cfg.admin_starting_balance if main_cfg else 100
+                db.set_balance(admin_id, "main", starting_balance)
+            
+            db.set_bot_data(admin_id, "main",
+                quiz_passed=False, show_in_top=True,
+                is_blocked=False, is_frozen=False,
+                is_moderator=True, is_announcement_mod=True,
+                is_announcement_blocked=False,
+                is_admin=True, is_owner=False,
+                activated_at=datetime.now().isoformat(),
+                last_promo_at=None
+            )
+            logger.info(f"✅ Админ {admin_id} зарегистрирован")
+        else:
+            logger.info(f"✅ Админ {admin_id} уже зарегистрирован")
+    
+    # 3. Регистрируем владельцев подключённых ботов
+    for bot_id, bot_cfg in config.bots.items():
+        if bot_id == "main":
+            continue
+        if bot_cfg.owner_id:
+            owner_data = db.get_bot_data(bot_cfg.owner_id, bot_id)
+            if not owner_data.get('is_owner'):
+                existing_user = db.get_user(bot_cfg.owner_id)
+                if not existing_user:
+                    db.create_or_update_user(bot_cfg.owner_id, f"owner{bot_cfg.owner_id}", f"Владелец {bot_cfg.owner_id}")
+                
+                db.set_balance(bot_cfg.owner_id, bot_id, float('inf'))
+                db.set_bot_data(bot_cfg.owner_id, bot_id,
+                    quiz_passed=False, show_in_top=False,
+                    is_blocked=False, is_frozen=False,
+                    is_moderator=True, is_announcement_mod=True,
+                    is_announcement_blocked=False,
+                    is_admin=True, is_owner=True,
+                    activated_at=datetime.now().isoformat(),
+                    last_promo_at=None
+                )
+                logger.info(f"✅ Владелец {bot_cfg.owner_id} бота {bot_id} зарегистрирован")
+
     # Главный бот
     main_bot = Bot(token=MAIN_BOT_TOKEN)
     main_dp = Dispatcher(storage=MemoryStorage())
     
-    # ИСПРАВЛЕНИЕ: Создаём обработчики ТОЛЬКО ОДИН РАЗ
     create_bot_handlers("main", main_bot, main_dp)
     create_shop_admin_handlers("main", main_bot, main_dp)
     create_connection_handlers(main_bot, main_dp)
@@ -3982,22 +4060,20 @@ async def main():
     config.active_bots["main"] = main_bot
     config.active_dispatchers["main"] = main_dp
 
-    # ИСПРАВЛЕНИЕ: Запуск подключённых ботов (БЕЗ главного)
+    # Запуск подключённых ботов (БЕЗ главного)
     for bot_id, bot_cfg in config.bots.items():
-        if bot_id == "main":  # ← ПРОПУСКАЕМ главного бота (уже создан выше)
+        if bot_id == "main":
             continue
         try:
             connected_bot = Bot(token=bot_cfg.token)
             connected_dp = Dispatcher(storage=MemoryStorage())
             
-            # Создаём обработчики для подключённого бота
             create_bot_handlers(bot_id, connected_bot, connected_dp)
             create_shop_admin_handlers(bot_id, connected_bot, connected_dp)
             
             config.active_bots[bot_id] = connected_bot
             config.active_dispatchers[bot_id] = connected_dp
             
-            # Запускаем подключённый бот в фоне
             asyncio.create_task(connected_dp.start_polling(connected_bot))
             logger.info(f"Запущен подключённый бот: {bot_id}")
         except Exception as e:
@@ -4046,6 +4122,7 @@ async def main():
     logger.info(f"Активных задач удаления: {len(config.scheduled_deletions)}")
     logger.info("Запуск главного бота...")
     await main_dp.start_polling(main_bot)
+
 
 if __name__ == "__main__":
     print("🚀 Запуск бота...", flush=True)
