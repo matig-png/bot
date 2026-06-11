@@ -640,26 +640,37 @@ def register_user(user: User, bot_id: str):
 
 def check_admin(uid: int, bot_id: str) -> bool:
     """Является ли пользователь админом."""
+    # Приоритет: переменные окружения для главного бота
+    if bot_id == "main" and uid in ADMIN_IDS:
+        return True
     data = db.get_bot_data(uid, bot_id)
     return bool(data.get('is_admin') or data.get('is_owner'))
 
 
 def check_owner(uid: int, bot_id: str) -> bool:
     """Является ли пользователь владельцем."""
-    return bool(db.get_bot_data(uid, bot_id).get('is_owner'))
+    if bot_id == "main" and uid == MAIN_ADMIN_ID:
+        return True
+    data = db.get_bot_data(uid, bot_id)
+    return bool(data.get('is_owner'))
 
 
 def check_moderator(uid: int, bot_id: str) -> bool:
     """Является ли пользователь модератором тейков (или выше)."""
+    # Админы и владельцы автоматически модераторы
+    if check_admin(uid, bot_id) or check_owner(uid, bot_id):
+        return True
     data = db.get_bot_data(uid, bot_id)
-    return bool(data.get('is_moderator') or data.get('is_admin') or data.get('is_owner'))
+    return bool(data.get('is_moderator'))
 
 
 def check_announcement_moderator(uid: int, bot_id: str) -> bool:
     """Является ли пользователь модератором объявлений."""
+    if check_admin(uid, bot_id) or check_owner(uid, bot_id):
+        return True
     data = db.get_bot_data(uid, bot_id)
-    return bool(data.get('is_announcement_mod') or data.get('is_admin') or data.get('is_owner'))
-
+    return bool(data.get('is_announcement_mod'))
+    
 
 def check_announcement_blocked(uid: int, bot_id: str) -> bool:
     """Заблокирован ли пользователь для объявлений (независимо от тейков)."""
@@ -676,6 +687,24 @@ def can_send_take(uid: int, bot_id: str) -> Tuple[bool, int, str]:
     bot_cfg = config.bots.get(bot_id)
     if not bot_cfg:
         return False, 0, "Ошибка конфигурации"
+
+    def sync_env_admins_to_db():
+    """Синхронизирует админов из .env с базой данных при запуске."""
+    if not ADMIN_IDS:
+        logger.warning("⚠️ ADMIN_IDS не заданы в .env")
+        return
+        
+    for uid in ADMIN_IDS:
+        db.create_or_update_user(uid, f"admin_{uid}", "Администратор")
+        db.set_balance(uid, "main", float('inf'))
+        db.set_bot_data(uid, "main",
+            is_admin=True,
+            is_owner=(uid == MAIN_ADMIN_ID),
+            is_moderator=True,
+            is_announcement_mod=True,
+            activated_at=datetime.now().isoformat()
+        )
+    logger.info(f"✅ Админы из .env синхронизированы с БД: {ADMIN_IDS}")
 
     cooldown_minutes = bot_cfg.take_cooldown_minutes
     now = datetime.now()
