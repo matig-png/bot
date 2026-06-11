@@ -688,7 +688,8 @@ def can_send_take(uid: int, bot_id: str) -> Tuple[bool, int, str]:
     if not bot_cfg:
         return False, 0, "Ошибка конфигурации"
 
-    def sync_env_admins_to_db():
+    
+def sync_env_admins_to_db():
     """Синхронизирует админов из .env с базой данных при запуске."""
     if not ADMIN_IDS:
         logger.warning("⚠️ ADMIN_IDS не заданы в .env")
