@@ -1443,8 +1443,9 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
 
 def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     """Создаёт все обработчики для конкретного бота."""
-    # ИСПРАВЛЕНИЕ: Создаём НОВЫЙ роутер для КАЖДОГО бота
-    router = Router(name=f"bot_{bot_id}_handlers")
+    # Создаём роутер с уникальным именем
+    router_name = f"handlers_{bot_id}_{id(dp)}"
+    router = Router(name=router_name)
     bot_config = config.bots.get(bot_id)
 
     @router.message(Command("start"))
@@ -1764,6 +1765,11 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await callback.message.edit_text("Неправильный ответ.", reply_markup=build_main_menu(bot_id))
         await state.clear()
         await callback.answer()
+
+     try:
+        dp.include_router(router)
+    except RuntimeError as e:
+        logger.warning(f"Роутер {router_name} уже подключён: {e}")
 
     # =================== ОБЪЯВЛЕНИЯ (С ПОДДЕРЖКОЙ МЕДИАГРУПП) ===================
 
@@ -2799,8 +2805,9 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
 def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     """Обработчики магазина, пиара, админ-панели и канала."""
-    # ИСПРАВЛЕНИЕ: Создаём НОВЫЙ роутер для КАЖДОГО бота
-    router = Router(name=f"bot_{bot_id}_shop_admin")
+    # Создаём роутер с уникальным именем
+    router_name = f"shop_admin_{bot_id}_{id(dp)}"
+    router = Router(name=router_name)
     bot_config = config.bots.get(bot_id)
 
     # =================== МАГАЗИН / ПИАР ===================
@@ -2946,6 +2953,8 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await callback.answer()
 
     dp.include_router(router)
+
+    pass
 
 # =================== АДМИН-ПАНЕЛЬ ===================
 
@@ -3178,6 +3187,11 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         except Exception as e:
             await message.answer(f"❌ Ошибка: {e}", reply_markup=build_admin_menu(message.from_user.id, bot_id))
         await state.clear()
+
+    try:
+        dp.include_router(router)
+    except RuntimeError as e:
+        logger.warning(f"Роутер {router_name} уже подключён: {e}")
 
     # =================== ЦЕНЗУРА ===================
 
@@ -3650,8 +3664,9 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
 def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
     """Обработчики подключения новых ботов (только главный бот)."""
-    # ИСПРАВЛЕНИЕ: Создаём НОВЫЙ роутер
-    router = Router(name="connection_handlers")
+    # Создаём роутер с уникальным именем
+    router_name = f"connection_{id(dp)}"
+    router = Router(name=router_name)
 
     @router.callback_query(F.data == "connect_bot")
     async def connect_start(callback: types.CallbackQuery, state: FSMContext):
@@ -3960,6 +3975,11 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
         await state.clear()
 
     dp.include_router(router)
+
+ try:
+        dp.include_router(router)
+    except RuntimeError as e:
+        logger.warning(f"Роутер {router_name} уже подключён: {e}")
 
 
 # ====================== ГЛАВНАЯ ФУНКЦИЯ ======================
