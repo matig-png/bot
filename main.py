@@ -21,6 +21,34 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 # Supabase
 from supabase import create_client, Client
 
+from aiogram import BaseMiddleware
+from typing import Callable, Dict, Any, Awaitable
+
+class RegistrationMiddleware(BaseMiddleware):
+    async def __call__(
+        self,
+        handler: Callable[[types.TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        event: types.TelegramObject,
+        data: Dict[str, Any]
+    ) -> Any:
+        user: Optional[User] = data.get("event_from_user")
+        
+        if user and not user.is_bot:
+            # Получаем bot_id из конфига или контекста (в данном случае "main" или по токену)
+            # Для простоты берем bot_id из логики инициализации
+            bot = data.get("bot")
+            # Находим bot_id по токену в конфиге
+            bot_id = "main" # По умолчанию
+            for bid, cfg in config.bots.items():
+                if cfg.token == bot.token:
+                    bot_id = bid
+                    break
+            
+            # РЕГИСТРАЦИЯ
+            register_user(user, bot_id)
+            
+        return await handler(event, data)
+
 # ====================== ЛОГИРОВАНИЕ ======================
 
 sys.stdout.reconfigure(line_buffering=True)
@@ -4082,6 +4110,10 @@ async def main():
     # Главный бот
     main_bot = Bot(token=MAIN_BOT_TOKEN)
     main_dp = Dispatcher(storage=MemoryStorage())
+
+   # === ВСТАВИТЬ СЮДА ===
+    main_dp.message.outer_middleware(RegistrationMiddleware())
+    main_dp.callback_query.outer_middleware(RegistrationMiddleware())
     
     create_bot_handlers("main", main_bot, main_dp)
     create_shop_admin_handlers("main", main_bot, main_dp)
@@ -4097,6 +4129,10 @@ async def main():
         try:
             connected_bot = Bot(token=bot_cfg.token)
             connected_dp = Dispatcher(storage=MemoryStorage())
+
+             # === ВСТАВИТЬ СЮДА (для каждого дочернего бота) ===
+            connected_dp.message.outer_middleware(RegistrationMiddleware())
+            connected_dp.callback_query.outer_middleware(RegistrationMiddleware()) 
             
             create_bot_handlers(bot_id, connected_bot, connected_dp)
             create_shop_admin_handlers(bot_id, connected_bot, connected_dp)
