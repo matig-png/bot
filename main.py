@@ -2787,11 +2787,10 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
     dp.include_router(router)
 
-
 def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     """Обработчики магазина, пиара, админ-панели и канала."""
-    # ИСПРАВЛЕНИЕ: Создаём НОВЫЙ роутер для КАЖДОГО бота
-    router = Router(name=f"bot_{bot_id}_shop_admin")
+    # Создаём роутер с уникальным именем
+    router = Router(name=f"shop_admin_{bot_id}_{id(dp)}")
     bot_config = config.bots.get(bot_id)
 
     # =================== МАГАЗИН / ПИАР ===================
@@ -2936,9 +2935,7 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await callback.message.edit_caption(caption="❌ Продажа отклонена")
             await callback.answer()
 
-    dp.include_router(router)
-
-# =================== АДМИН-ПАНЕЛЬ ===================
+    # =================== АДМИН-ПАНЕЛЬ ===================
 
     @router.callback_query(F.data == "adm_users")
     async def admin_users_list(callback: types.CallbackQuery):
@@ -3635,7 +3632,13 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         task = asyncio.create_task(run_auction_timer(bot_instance, bot_id, original_msg_id))
         config.auction_tasks[original_msg_id] = task
 
-    dp.include_router(router)
+    # ИСПРАВЛЕНИЕ: Безопасное подключение роутера
+    try:
+        dp.include_router(router)
+        logger.info(f"✅ Роутер shop_admin для {bot_id} подключён")
+    except RuntimeError as e:
+        logger.warning(f"⚠️ Роутер shop_admin для {bot_id} уже подключён, пропускаем")
+
 
 # ====================== ПОДКЛЮЧЕНИЕ БОТОВ ======================
 
