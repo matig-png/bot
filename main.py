@@ -113,9 +113,9 @@ class Database:
         """Подключение к Supabase."""
         try:
             self.supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-            logger.info(f"Supabase подключена: {SUPABASE_URL}")
+            logger.info(f"✅ Supabase подключена: {SUPABASE_URL}")
         except Exception as e:
-            logger.error(f"Ошибка подключения к Supabase: {e}")
+            logger.error(f"❌ Ошибка подключения к Supabase: {e}")
             raise
 
     # --- Пользователи ---
@@ -126,7 +126,7 @@ class Database:
             response = self.supabase.table('users').select('*').eq('user_id', user_id).execute()
             return response.data[0] if response.data else None
         except Exception as e:
-            logger.error(f"Ошибка получения пользователя {user_id}: {e}")
+            logger.error(f"❌ Ошибка получения пользователя {user_id}: {e}")
             return None
 
     def create_or_update_user(self, user_id: int, username: str, name: str):
@@ -139,6 +139,7 @@ class Database:
                     'username': username,
                     'name': name
                 }).eq('user_id', user_id).execute()
+                logger.info(f"♻️ Обновлён пользователь {user_id} (@{username})")
             else:
                 self.supabase.table('users').insert({
                     'user_id': user_id,
@@ -146,8 +147,9 @@ class Database:
                     'name': name,
                     'created_at': now
                 }).execute()
+                logger.info(f"✅ Создан новый пользователь {user_id} (@{username})")
         except Exception as e:
-            logger.error(f"Ошибка создания/обновления пользователя {user_id}: {e}")
+            logger.error(f"❌ Ошибка создания/обновления пользователя {user_id}: {e}")
 
     # --- Балансы ---
 
@@ -160,7 +162,7 @@ class Database:
             row = response.data[0]
             return float('inf') if row['is_infinite'] else row['balance']
         except Exception as e:
-            logger.error(f"Ошибка получения баланса {user_id}/{bot_id}: {e}")
+            logger.error(f"❌ Ошибка получения баланса {user_id}/{bot_id}: {e}")
             return 0
 
     def set_balance(self, user_id: int, bot_id: str, balance: float):
@@ -181,8 +183,9 @@ class Database:
                     'balance': val,
                     'is_infinite': is_inf
                 }).execute()
+            logger.info(f"💰 Установлен баланс {user_id}/{bot_id}: {balance}")
         except Exception as e:
-            logger.error(f"Ошибка установки баланса {user_id}/{bot_id}: {e}")
+            logger.error(f"❌ Ошибка установки баланса {user_id}/{bot_id}: {e}")
 
     def add_balance(self, user_id: int, bot_id: str, amount: float) -> bool:
         """Добавить к балансу."""
@@ -220,7 +223,7 @@ class Database:
                 'is_announcement_blocked': False
             }
         except Exception as e:
-            logger.error(f"Ошибка получения bot_data {user_id}/{bot_id}: {e}")
+            logger.error(f"❌ Ошибка получения bot_data {user_id}/{bot_id}: {e}")
             return {
                 'user_id': user_id, 'bot_id': bot_id,
                 'quiz_passed': False, 'show_in_top': True,
@@ -260,10 +263,12 @@ class Database:
                         if key in kwargs:
                             current[key] = value
                 self.supabase.table('user_bot_data').update(current).eq('user_id', user_id).eq('bot_id', bot_id).execute()
+                logger.info(f"♻️ Обновлены bot_data для {user_id}/{bot_id}")
             else:
                 self.supabase.table('user_bot_data').insert(data).execute()
+                logger.info(f"✅ Созданы bot_data для {user_id}/{bot_id}")
         except Exception as e:
-            logger.error(f"Ошибка установки bot_data {user_id}/{bot_id}: {e}")
+            logger.error(f"❌ Ошибка установки bot_data {user_id}/{bot_id}: {e}")
 
     # --- Тейки ---
 
@@ -273,7 +278,7 @@ class Database:
             response = self.supabase.table('take_timestamps').select('timestamp').eq('user_id', user_id).eq('bot_id', bot_id).gt('timestamp', since.isoformat()).order('timestamp', desc=True).execute()
             return [row['timestamp'] for row in response.data]
         except Exception as e:
-            logger.error(f"Ошибка получения timestamps {user_id}/{bot_id}: {e}")
+            logger.error(f"❌ Ошибка получения timestamps {user_id}/{bot_id}: {e}")
             return []
 
     def add_take_timestamp(self, user_id: int, bot_id: str):
@@ -292,7 +297,7 @@ class Database:
                 ids_to_keep = [r['id'] for r in all_records.data[:20]]
                 self.supabase.table('take_timestamps').delete().eq('user_id', user_id).eq('bot_id', bot_id).not_.in_('id', ids_to_keep).execute()
         except Exception as e:
-            logger.error(f"Ошибка добавления timestamp {user_id}/{bot_id}: {e}")
+            logger.error(f"❌ Ошибка добавления timestamp {user_id}/{bot_id}: {e}")
 
     # --- Списки ---
 
@@ -316,7 +321,7 @@ class Database:
                     })
             return result
         except Exception as e:
-            logger.error(f"Ошибка получения пользователей для бота {bot_id}: {e}")
+            logger.error(f"❌ Ошибка получения пользователей для бота {bot_id}: {e}")
             return []
 
     def find_user_by_input(self, input_str: str) -> Optional[int]:
@@ -334,7 +339,7 @@ class Database:
             if response.data:
                 return response.data[0]['user_id']
         except Exception as e:
-            logger.error(f"Ошибка поиска пользователя {input_str}: {e}")
+            logger.error(f"❌ Ошибка поиска пользователя {input_str}: {e}")
         
         return None
 
@@ -356,6 +361,7 @@ class BotConfig:
     announcement_channel: str = ""
     modules: List[str] = field(default_factory=lambda: ["takes", "shop"])
     take_cooldown_minutes: int = 3
+    max_takes: int = 3
     quiz_reward: int = 50
     admin_starting_balance: int = 100
     promo_price_per_hour: int = 10
@@ -418,6 +424,8 @@ class ConfigStorage:
                 for bot_id, bot_data in data.get('bots', {}).items():
                     if 'announcement_channel' not in bot_data:
                         bot_data['announcement_channel'] = ""
+                    if 'max_takes' not in bot_data:
+                        bot_data['max_takes'] = 3
                     self.bots[bot_id] = BotConfig(**bot_data)
 
                 if 'exchange_rates' in data:
@@ -435,9 +443,9 @@ class ConfigStorage:
                 self.active_quizzes = data.get('active_quizzes', {})
                 self.active_auctions = data.get('active_auctions', {})
 
-                logger.info(f"Конфигурация загружена: {len(self.bots)} ботов")
+                logger.info(f"✅ Конфигурация загружена: {len(self.bots)} ботов")
         except Exception as e:
-            logger.error(f"Ошибка загрузки конфигурации: {e}")
+            logger.error(f"❌ Ошибка загрузки конфигурации: {e}")
 
         if "main" not in self.bots:
             self.bots["main"] = BotConfig(
@@ -451,17 +459,21 @@ class ConfigStorage:
                 announcement_channel=MAIN_ANNOUNCEMENT_CHANNEL,
                 modules=["takes", "shop"],
                 take_cooldown_minutes=TAKE_COOLDOWN_MINUTES,
+                max_takes=MAX_TAKES,
                 owner_id=MAIN_ADMIN_ID,
                 base_exchange_rate=1.0
             )
             self.exchange_rates.rates["main"] = 1.0
-            logger.info(f"Главный бот создан")
+            logger.info(f"✅ Главный бот создан")
             self.save()
         else:
             needs_save = False
             if not self.bots["main"].announcement_channel:
                 self.bots["main"].announcement_channel = MAIN_ANNOUNCEMENT_CHANNEL
-                logger.info(f"Обновлён канал объявлений: {MAIN_ANNOUNCEMENT_CHANNEL}")
+                logger.info(f"♻️ Обновлён канал объявлений: {MAIN_ANNOUNCEMENT_CHANNEL}")
+                needs_save = True
+            if not hasattr(self.bots["main"], 'max_takes'):
+                self.bots["main"].max_takes = MAX_TAKES
                 needs_save = True
             if needs_save:
                 self.save()
@@ -483,7 +495,7 @@ class ConfigStorage:
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            logger.error(f"Ошибка сохранения конфигурации: {e}")
+            logger.error(f"❌ Ошибка сохранения конфигурации: {e}")
 
 
 config = ConfigStorage()
@@ -640,30 +652,43 @@ def register_user(user: User, bot_id: str):
     username = user.username or f"user{uid}"
     name = user.full_name
 
+    # ВСЕГДА создаём/обновляем пользователя
     db.create_or_update_user(uid, username, name)
-
+    
+    # Проверяем, нужна ли инициализация (новый пользователь или нет данных)
     existing = db.get_bot_data(uid, bot_id)
+    
+    # Если это новый пользователь (нет activated_at), инициализируем
     if not existing.get('activated_at'):
         bot_cfg = config.bots.get(bot_id)
         is_owner_flag = bot_cfg and bot_cfg.owner_id == uid
         is_admin_flag = bot_id == "main" and uid in ADMIN_IDS
         is_main_owner = bot_id == "main" and uid == MAIN_ADMIN_ID
 
+        # Устанавливаем баланс
         if is_owner_flag or is_main_owner:
             db.set_balance(uid, bot_id, float('inf'))
         elif is_admin_flag:
-            db.set_balance(uid, bot_id, bot_cfg.admin_starting_balance)
+            initial_balance = bot_cfg.admin_starting_balance if bot_cfg else 100
+            db.set_balance(uid, bot_id, initial_balance)
         else:
             db.set_balance(uid, bot_id, 0)
 
+        # Устанавливаем роли и флаги
         db.set_bot_data(uid, bot_id,
-            quiz_passed=False, show_in_top=True, is_blocked=False, is_frozen=False,
-            is_moderator=False, is_announcement_mod=False, is_announcement_blocked=False,
+            quiz_passed=False, 
+            show_in_top=True, 
+            is_blocked=False, 
+            is_frozen=False,
+            is_moderator=False, 
+            is_announcement_mod=False, 
+            is_announcement_blocked=False,
             is_admin=(is_admin_flag or is_owner_flag or is_main_owner),
             is_owner=(is_owner_flag or is_main_owner),
             activated_at=datetime.now().isoformat(),
             last_promo_at=''
         )
+        logger.info(f"🎉 Зарегистрирован новый пользователь {uid} (@{username}) в боте {bot_id}")
 
 
 def check_admin(uid: int, bot_id: str) -> bool:
@@ -709,18 +734,19 @@ def check_announcement_blocked(uid: int, bot_id: str) -> bool:
 def can_send_take(uid: int, bot_id: str) -> Tuple[bool, int, str]:
     """
     Проверка лимита тейков.
-    У пользователя MAX_TAKES тейков, каждый восстанавливается через TAKE_COOLDOWN_MINUTES минут.
+    У пользователя max_takes тейков, каждый восстанавливается через take_cooldown_minutes минут.
     Возвращает: (можно_ли, осталось_тейков, сообщение).
     """
     bot_cfg = config.bots.get(bot_id)
     if not bot_cfg:
         return False, 0, "Ошибка конфигурации"
 
+    max_takes = bot_cfg.max_takes
     cooldown_minutes = bot_cfg.take_cooldown_minutes
     now = datetime.now()
 
-    # Получаем тейки за последние MAX_TAKES * cooldown_minutes минут
-    since = now - timedelta(minutes=MAX_TAKES * cooldown_minutes)
+    # Получаем тейки за последние max_takes * cooldown_minutes минут
+    since = now - timedelta(minutes=max_takes * cooldown_minutes)
     recent_timestamps = db.get_take_timestamps(uid, bot_id, since)
 
     # Считаем сколько тейков ещё занимают слоты (не восстановились)
@@ -734,10 +760,10 @@ def can_send_take(uid: int, bot_id: str) -> Tuple[bool, int, str]:
         except Exception:
             pass
 
-    remaining = MAX_TAKES - used_slots
+    remaining = max_takes - used_slots
 
     if remaining > 0:
-        return True, remaining, f"Тейков: {remaining}/{MAX_TAKES}"
+        return True, remaining, f"Тейков: {remaining}/{max_takes}"
 
     # Находим когда восстановится следующий тейк
     if recent_timestamps:
@@ -750,11 +776,11 @@ def can_send_take(uid: int, bot_id: str) -> Tuple[bool, int, str]:
                     remaining_time = next_available - now
                     mins = int(remaining_time.total_seconds() // 60)
                     secs = int(remaining_time.total_seconds() % 60)
-                    return False, 0, f"Нет тейков. Следующий через {mins}м {secs}с (0/{MAX_TAKES})"
+                    return False, 0, f"Нет тейков. Следующий через {mins}м {secs}с (0/{max_takes})"
             except Exception:
                 pass
 
-    return True, 1, f"Тейков: 1/{MAX_TAKES}"
+    return True, 1, f"Тейков: 1/{max_takes}"
 
 
 def sync_env_admins_to_db():
