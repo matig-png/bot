@@ -207,68 +207,94 @@ class Database:
 
     # --- Данные пользователя для бота ---
 
-    def get_bot_data(self, user_id: int, bot_id: str) -> Dict:
-        """Получить данные пользователя для конкретного бота."""
-        try:
-            response = self.supabase.table('user_bot_data').select('*').eq('user_id', user_id).eq('bot_id', bot_id).execute()
-            if response.data:
-                return response.data[0]
-            return {
-                'user_id': user_id, 'bot_id': bot_id,
-                'quiz_passed': False, 'show_in_top': True,
-                'is_blocked': False, 'is_frozen': False,
-                'is_moderator': False, 'is_admin': False, 'is_owner': False,
-                'activated_at': '', 'last_promo_at': '',
-                'is_announcement_mod': False,
-                'is_announcement_blocked': False
-            }
-        except Exception as e:
-            logger.error(f"❌ Ошибка получения bot_data {user_id}/{bot_id}: {e}")
-            return {
-                'user_id': user_id, 'bot_id': bot_id,
-                'quiz_passed': False, 'show_in_top': True,
-                'is_blocked': False, 'is_frozen': False,
-                'is_moderator': False, 'is_admin': False, 'is_owner': False,
-                'activated_at': '', 'last_promo_at': '',
-                'is_announcement_mod': False,
-                'is_announcement_blocked': False
-            }
+  def get_bot_data(self, user_id: int, bot_id: str) -> Dict:
+    """Получить данные пользователя для конкретного бота."""
+    try:
+        response = self.supabase.table('user_bot_data').select('*').eq('user_id', user_id).eq('bot_id', bot_id).execute()
+        if response.data:
+            logger.debug(f"✅ Получены bot_data для {user_id}/{bot_id}")
+            return response.data[0]
+        
+        # ВАЖНО: Возвращаем пустой словарь БЕЗ activated_at,
+        # чтобы register_user понял, что это новый пользователь
+        logger.debug(f"⚠️ bot_data не найдены для {user_id}/{bot_id}, возврат пустого словаря")
+        return {
+            'user_id': user_id, 
+            'bot_id': bot_id,
+            'quiz_passed': False, 
+            'show_in_top': True,
+            'is_blocked': False, 
+            'is_frozen': False,
+            'is_moderator': False, 
+            'is_admin': False, 
+            'is_owner': False,
+            'activated_at': '',  # ПУСТАЯ СТРОКА = новый пользователь
+            'last_promo_at': '',
+            'is_announcement_mod': False,
+            'is_announcement_blocked': False
+        }
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения bot_data {user_id}/{bot_id}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {
+            'user_id': user_id, 
+            'bot_id': bot_id,
+            'quiz_passed': False, 
+            'show_in_top': True,
+            'is_blocked': False, 
+            'is_frozen': False,
+            'is_moderator': False, 
+            'is_admin': False, 
+            'is_owner': False,
+            'activated_at': '',  # ПУСТАЯ СТРОКА = новый пользователь
+            'last_promo_at': '',
+            'is_announcement_mod': False,
+            'is_announcement_blocked': False
+        }
 
     def set_bot_data(self, user_id: int, bot_id: str, **kwargs):
-        """Обновить данные пользователя для бота."""
-        try:
-            existing = self.supabase.table('user_bot_data').select('*').eq('user_id', user_id).eq('bot_id', bot_id).execute()
+    """Обновить данные пользователя для бота."""
+    try:
+        existing = self.supabase.table('user_bot_data').select('*').eq('user_id', user_id).eq('bot_id', bot_id).execute()
+        
+        data = {
+            'user_id': user_id,
+            'bot_id': bot_id,
+            'quiz_passed': kwargs.get('quiz_passed', False),
+            'show_in_top': kwargs.get('show_in_top', True),
+            'is_blocked': kwargs.get('is_blocked', False),
+            'is_frozen': kwargs.get('is_frozen', False),
+            'is_moderator': kwargs.get('is_moderator', False),
+            'is_admin': kwargs.get('is_admin', False),
+            'is_owner': kwargs.get('is_owner', False),
+            'activated_at': kwargs.get('activated_at', ''),
+            'last_promo_at': kwargs.get('last_promo_at', ''),
+            'is_announcement_mod': kwargs.get('is_announcement_mod', False),
+            'is_announcement_blocked': kwargs.get('is_announcement_blocked', False)
+        }
+        
+        if existing.data:
+            # ИСПРАВЛЕНИЕ: Обновляем только переданные поля
+            update_data = {}
+            for key in data.keys():
+                if key not in ['user_id', 'bot_id']:
+                    if key in kwargs:  # Обновляем только явно переданные значения
+                        update_data[key] = kwargs[key]
             
-            data = {
-                'user_id': user_id,
-                'bot_id': bot_id,
-                'quiz_passed': kwargs.get('quiz_passed', False),
-                'show_in_top': kwargs.get('show_in_top', True),
-                'is_blocked': kwargs.get('is_blocked', False),
-                'is_frozen': kwargs.get('is_frozen', False),
-                'is_moderator': kwargs.get('is_moderator', False),
-                'is_admin': kwargs.get('is_admin', False),
-                'is_owner': kwargs.get('is_owner', False),
-                'activated_at': kwargs.get('activated_at', ''),
-                'last_promo_at': kwargs.get('last_promo_at', ''),
-                'is_announcement_mod': kwargs.get('is_announcement_mod', False),
-                'is_announcement_blocked': kwargs.get('is_announcement_blocked', False)
-            }
-            
-            if existing.data:
-                # Обновляем существующие данные
-                current = existing.data[0]
-                for key, value in data.items():
-                    if key not in ['user_id', 'bot_id']:
-                        if key in kwargs:
-                            current[key] = value
-                self.supabase.table('user_bot_data').update(current).eq('user_id', user_id).eq('bot_id', bot_id).execute()
-                logger.info(f"♻️ Обновлены bot_data для {user_id}/{bot_id}")
+            if update_data:  # Если есть что обновлять
+                self.supabase.table('user_bot_data').update(update_data).eq('user_id', user_id).eq('bot_id', bot_id).execute()
+                logger.info(f"♻️ Обновлены bot_data для {user_id}/{bot_id}: {list(update_data.keys())}")
             else:
-                self.supabase.table('user_bot_data').insert(data).execute()
-                logger.info(f"✅ Созданы bot_data для {user_id}/{bot_id}")
-        except Exception as e:
-            logger.error(f"❌ Ошибка установки bot_data {user_id}/{bot_id}: {e}")
+                logger.debug(f"⚠️ Нечего обновлять для {user_id}/{bot_id}")
+        else:
+            # ИСПРАВЛЕНИЕ: При создании используем все поля из data
+            self.supabase.table('user_bot_data').insert(data).execute()
+            logger.info(f"✅ Созданы bot_data для {user_id}/{bot_id}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка установки bot_data {user_id}/{bot_id}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())  # Полный traceback для отладки
 
     # --- Тейки ---
 
@@ -658,37 +684,47 @@ def register_user(user: User, bot_id: str):
     # Проверяем, нужна ли инициализация (новый пользователь или нет данных)
     existing = db.get_bot_data(uid, bot_id)
     
-    # Если это новый пользователь (нет activated_at), инициализируем
-    if not existing.get('activated_at'):
+    # ИСПРАВЛЕНИЕ: Проверяем activated_at И что это не пустая строка
+    if not existing.get('activated_at') or existing.get('activated_at') == '':
         bot_cfg = config.bots.get(bot_id)
         is_owner_flag = bot_cfg and bot_cfg.owner_id == uid
         is_admin_flag = bot_id == "main" and uid in ADMIN_IDS
         is_main_owner = bot_id == "main" and uid == MAIN_ADMIN_ID
 
-        # Устанавливаем баланс
-        if is_owner_flag or is_main_owner:
+        # Устанавливаем баланс ТОЛЬКО если его нет или он равен 0
+        current_balance = db.get_balance(uid, bot_id)
+        
+        # Устанавливаем баланс только для новых пользователей
+        if current_balance == 0 and not (is_owner_flag or is_main_owner):
+            if is_owner_flag or is_main_owner:
+                db.set_balance(uid, bot_id, float('inf'))
+            elif is_admin_flag:
+                initial_balance = bot_cfg.admin_starting_balance if bot_cfg else 100
+                db.set_balance(uid, bot_id, initial_balance)
+            else:
+                db.set_balance(uid, bot_id, 0)
+        elif is_owner_flag or is_main_owner:
+            # Владельцы всегда должны иметь бесконечный баланс
             db.set_balance(uid, bot_id, float('inf'))
-        elif is_admin_flag:
-            initial_balance = bot_cfg.admin_starting_balance if bot_cfg else 100
-            db.set_balance(uid, bot_id, initial_balance)
-        else:
-            db.set_balance(uid, bot_id, 0)
 
         # Устанавливаем роли и флаги
         db.set_bot_data(uid, bot_id,
-            quiz_passed=False, 
-            show_in_top=True, 
-            is_blocked=False, 
-            is_frozen=False,
-            is_moderator=False, 
-            is_announcement_mod=False, 
-            is_announcement_blocked=False,
+            quiz_passed=existing.get('quiz_passed', False),  # Сохраняем существующие значения
+            show_in_top=existing.get('show_in_top', True), 
+            is_blocked=existing.get('is_blocked', False), 
+            is_frozen=existing.get('is_frozen', False),
+            is_moderator=existing.get('is_moderator', False), 
+            is_announcement_mod=existing.get('is_announcement_mod', False), 
+            is_announcement_blocked=existing.get('is_announcement_blocked', False),
             is_admin=(is_admin_flag or is_owner_flag or is_main_owner),
             is_owner=(is_owner_flag or is_main_owner),
             activated_at=datetime.now().isoformat(),
-            last_promo_at=''
+            last_promo_at=existing.get('last_promo_at', '')  # Сохраняем последний пиар
         )
         logger.info(f"🎉 Зарегистрирован новый пользователь {uid} (@{username}) в боте {bot_id}")
+    else:
+        # НОВОЕ: Для существующих пользователей только обновляем username/name
+        logger.debug(f"♻️ Пользователь {uid} (@{username}) уже зарегистрирован в боте {bot_id}")
 
 
 def check_admin(uid: int, bot_id: str) -> bool:
@@ -916,7 +952,6 @@ def get_user_display_name(user_id: int) -> str:
     if username and not username.startswith('user'):
         return f"@{username}"
     return user.get('name', 'Неизвестный')
-
 
 # ====================== ВСТРОЕННАЯ ВИКТОРИНА ======================
 
