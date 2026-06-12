@@ -207,51 +207,51 @@ class Database:
 
     # --- Данные пользователя для бота ---
 
-  def get_bot_data(self, user_id: int, bot_id: str) -> Dict:
-    """Получить данные пользователя для конкретного бота."""
-    try:
-        response = self.supabase.table('user_bot_data').select('*').eq('user_id', user_id).eq('bot_id', bot_id).execute()
-        if response.data:
-            logger.debug(f"✅ Получены bot_data для {user_id}/{bot_id}")
-            return response.data[0]
-        
-        # ВАЖНО: Возвращаем пустой словарь БЕЗ activated_at,
-        # чтобы register_user понял, что это новый пользователь
-        logger.debug(f"⚠️ bot_data не найдены для {user_id}/{bot_id}, возврат пустого словаря")
-        return {
-            'user_id': user_id, 
-            'bot_id': bot_id,
-            'quiz_passed': False, 
-            'show_in_top': True,
-            'is_blocked': False, 
-            'is_frozen': False,
-            'is_moderator': False, 
-            'is_admin': False, 
-            'is_owner': False,
-            'activated_at': '',  # ПУСТАЯ СТРОКА = новый пользователь
-            'last_promo_at': '',
-            'is_announcement_mod': False,
-            'is_announcement_blocked': False
-        }
-    except Exception as e:
-        logger.error(f"❌ Ошибка получения bot_data {user_id}/{bot_id}: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return {
-            'user_id': user_id, 
-            'bot_id': bot_id,
-            'quiz_passed': False, 
-            'show_in_top': True,
-            'is_blocked': False, 
-            'is_frozen': False,
-            'is_moderator': False, 
-            'is_admin': False, 
-            'is_owner': False,
-            'activated_at': '',  # ПУСТАЯ СТРОКА = новый пользователь
-            'last_promo_at': '',
-            'is_announcement_mod': False,
-            'is_announcement_blocked': False
-        }
+    def get_bot_data(self, user_id: int, bot_id: str) -> Dict:
+        """Получить данные пользователя для конкретного бота."""
+        try:
+            response = self.supabase.table('user_bot_data').select('*').eq('user_id', user_id).eq('bot_id', bot_id).execute()
+            if response.data:
+                logger.debug(f"✅ Получены bot_data для {user_id}/{bot_id}")
+                return response.data[0]
+            
+            # ВАЖНО: Возвращаем пустой словарь с пустым activated_at,
+            # чтобы register_user понял, что это новый пользователь
+            logger.debug(f"⚠️ bot_data не найдены для {user_id}/{bot_id}, возврат стандартных данных")
+            return {
+                'user_id': user_id, 
+                'bot_id': bot_id,
+                'quiz_passed': False, 
+                'show_in_top': True,
+                'is_blocked': False, 
+                'is_frozen': False,
+                'is_moderator': False, 
+                'is_admin': False, 
+                'is_owner': False,
+                'activated_at': '',
+                'last_promo_at': '',
+                'is_announcement_mod': False,
+                'is_announcement_blocked': False
+            }
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения bot_data {user_id}/{bot_id}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                'user_id': user_id, 
+                'bot_id': bot_id,
+                'quiz_passed': False, 
+                'show_in_top': True,
+                'is_blocked': False, 
+                'is_frozen': False,
+                'is_moderator': False, 
+                'is_admin': False, 
+                'is_owner': False,
+                'activated_at': '',
+                'last_promo_at': '',
+                'is_announcement_mod': False,
+                'is_announcement_blocked': False
+            }
 
     def set_bot_data(self, user_id: int, bot_id: str, **kwargs):
     """Обновить данные пользователя для бота."""
