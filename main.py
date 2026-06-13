@@ -254,47 +254,47 @@ class Database:
             }
 
     def set_bot_data(self, user_id: int, bot_id: str, **kwargs):
-    """Обновить данные пользователя для бота."""
-    try:
-        existing = self.supabase.table('user_bot_data').select('*').eq('user_id', user_id).eq('bot_id', bot_id).execute()
-        
-        data = {
-            'user_id': user_id,
-            'bot_id': bot_id,
-            'quiz_passed': kwargs.get('quiz_passed', False),
-            'show_in_top': kwargs.get('show_in_top', True),
-            'is_blocked': kwargs.get('is_blocked', False),
-            'is_frozen': kwargs.get('is_frozen', False),
-            'is_moderator': kwargs.get('is_moderator', False),
-            'is_admin': kwargs.get('is_admin', False),
-            'is_owner': kwargs.get('is_owner', False),
-            'activated_at': kwargs.get('activated_at', ''),
-            'last_promo_at': kwargs.get('last_promo_at', ''),
-            'is_announcement_mod': kwargs.get('is_announcement_mod', False),
-            'is_announcement_blocked': kwargs.get('is_announcement_blocked', False)
-        }
-        
-        if existing.data:
-            # ИСПРАВЛЕНИЕ: Обновляем только переданные поля
-            update_data = {}
-            for key in data.keys():
-                if key not in ['user_id', 'bot_id']:
-                    if key in kwargs:  # Обновляем только явно переданные значения
-                        update_data[key] = kwargs[key]
+        """Обновить данные пользователя для бота."""
+        try:
+            existing = self.supabase.table('user_bot_data').select('*').eq('user_id', user_id).eq('bot_id', bot_id).execute()
             
-            if update_data:  # Если есть что обновлять
-                self.supabase.table('user_bot_data').update(update_data).eq('user_id', user_id).eq('bot_id', bot_id).execute()
-                logger.info(f"♻️ Обновлены bot_data для {user_id}/{bot_id}: {list(update_data.keys())}")
+            data = {
+                'user_id': user_id,
+                'bot_id': bot_id,
+                'quiz_passed': kwargs.get('quiz_passed', False),
+                'show_in_top': kwargs.get('show_in_top', True),
+                'is_blocked': kwargs.get('is_blocked', False),
+                'is_frozen': kwargs.get('is_frozen', False),
+                'is_moderator': kwargs.get('is_moderator', False),
+                'is_admin': kwargs.get('is_admin', False),
+                'is_owner': kwargs.get('is_owner', False),
+                'activated_at': kwargs.get('activated_at', ''),
+                'last_promo_at': kwargs.get('last_promo_at', ''),
+                'is_announcement_mod': kwargs.get('is_announcement_mod', False),
+                'is_announcement_blocked': kwargs.get('is_announcement_blocked', False)
+            }
+            
+            if existing.data:
+                # ИСПРАВЛЕНИЕ: Обновляем только переданные поля
+                update_data = {}
+                for key in data.keys():
+                    if key not in ['user_id', 'bot_id']:
+                        if key in kwargs:  # Обновляем только явно переданные значения
+                            update_data[key] = kwargs[key]
+                
+                if update_data:  # Если есть что обновлять
+                    self.supabase.table('user_bot_data').update(update_data).eq('user_id', user_id).eq('bot_id', bot_id).execute()
+                    logger.info(f"♻️ Обновлены bot_data для {user_id}/{bot_id}: {list(update_data.keys())}")
+                else:
+                    logger.debug(f"⚠️ Нечего обновлять для {user_id}/{bot_id}")
             else:
-                logger.debug(f"⚠️ Нечего обновлять для {user_id}/{bot_id}")
-        else:
-            # ИСПРАВЛЕНИЕ: При создании используем все поля из data
-            self.supabase.table('user_bot_data').insert(data).execute()
-            logger.info(f"✅ Созданы bot_data для {user_id}/{bot_id}")
-    except Exception as e:
-        logger.error(f"❌ Ошибка установки bot_data {user_id}/{bot_id}: {e}")
-        import traceback
-        logger.error(traceback.format_exc())  # Полный traceback для отладки
+                # ИСПРАВЛЕНИЕ: При создании используем все поля из data
+                self.supabase.table('user_bot_data').insert(data).execute()
+                logger.info(f"✅ Созданы bot_data для {user_id}/{bot_id}")
+        except Exception as e:
+            logger.error(f"❌ Ошибка установки bot_data {user_id}/{bot_id}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())  # Полный traceback для отладки
 
     # --- Тейки ---
 
@@ -371,7 +371,6 @@ class Database:
 
 
 db = Database()
-
 
 # ====================== КОНФИГУРАЦИЯ БОТОВ (JSON) ======================
 
