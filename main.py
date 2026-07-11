@@ -2651,7 +2651,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                         try:
                             if is_blocked_flag:
                                 published_kb = build_published_take_keyboard_blocked(channel_msg_ids, uid)  # ← ИЗМЕНЕНИЕ
-                             else:
+                            else:
                                 published_kb = build_published_take_keyboard(channel_msg_ids, uid, False)  # ← ИЗМЕНЕНИЕ
                             await bot.send_message(
                                 mod_uid,
