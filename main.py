@@ -2647,7 +2647,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 all_users = db.get_all_users_for_bot(bid)
                 for user in all_users:
                     mod_uid = user['user_id']
-                     if check_moderator(mod_uid, bid):
+                    if check_moderator(mod_uid, bid):
                         try:
                             if is_blocked_flag:
                                 published_kb = build_published_take_keyboard_blocked(channel_msg_ids, uid)  # ← ИЗМЕНЕНИЕ
