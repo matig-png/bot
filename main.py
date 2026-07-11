@@ -2447,7 +2447,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                         
                         if msg.photo:
                             media_group.append(InputMediaPhoto(
-                                                                media=msg.photo[-1].file_id,
+                                media=msg.photo[-1].file_id,
                                 caption=censored if (idx == 0 and has_prof) else (text_caption if idx == 0 else ""),
                                 parse_mode="HTML" if (idx == 0 and has_prof) else None,
                                 caption_entities=entities if (idx == 0 and not has_prof) else None,
