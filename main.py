@@ -1175,14 +1175,16 @@ def build_take_moderation_keyboard_blocked(take_id: str, uid: int) -> InlineKeyb
     return builder.as_markup()
 
 
-def build_published_take_keyboard(channel_msg_id: int, uid: int, is_blocked: bool) -> InlineKeyboardMarkup:
+def build_published_take_keyboard(channel_msg_ids: List[int], uid: int, is_blocked: bool) -> InlineKeyboardMarkup:
     """
     Клавиатура для уже опубликованных тейков — пользователь НЕ заблокирован.
     Кнопка 'Удалить' вместо 'Отклонить'.
     """
     builder = InlineKeyboardBuilder()
+    # ИЗМЕНЕНИЕ: Сохраняем список ID через запятую
+    msg_ids_str = ",".join(map(str, channel_msg_ids))
     builder.row(
-        InlineKeyboardButton(text="🗑 Удалить из канала", callback_data=f"take_delete_{channel_msg_id}")
+        InlineKeyboardButton(text="🗑 Удалить из канала", callback_data=f"take_delete_{msg_ids_str}")
     )
     builder.row(
         InlineKeyboardButton(text="🚫 Заблокировать (тейки)", callback_data=f"user_block_{uid}")
@@ -1190,14 +1192,16 @@ def build_published_take_keyboard(channel_msg_id: int, uid: int, is_blocked: boo
     return builder.as_markup()
 
 
-def build_published_take_keyboard_blocked(channel_msg_id: int, uid: int) -> InlineKeyboardMarkup:
+def build_published_take_keyboard_blocked(channel_msg_ids: List[int], uid: int) -> InlineKeyboardMarkup:
     """
     Клавиатура для уже опубликованных тейков — пользователь уже заблокирован.
     Показывает кнопку 'Разблокировать (тейки)'.
     """
     builder = InlineKeyboardBuilder()
+    # ИЗМЕНЕНИЕ: Сохраняем список ID через запятую
+    msg_ids_str = ",".join(map(str, channel_msg_ids))
     builder.row(
-        InlineKeyboardButton(text="🗑 Удалить из канала", callback_data=f"take_delete_{channel_msg_id}")
+        InlineKeyboardButton(text="🗑 Удалить из канала", callback_data=f"take_delete_{msg_ids_str}")
     )
     builder.row(
         InlineKeyboardButton(text="🔓 Разблокировать (тейки)", callback_data=f"take_unblock_{uid}")
@@ -2472,39 +2476,67 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                         pass
                     
                     # НОВОЕ: Отправляем админам/модераторам с кнопкой "Удалить"
-                    if sent_messages:
-                        channel_msg_id = sent_messages[0].message_id
-                        is_blocked_flag = bool(db.get_bot_data(user_id, bid).get('is_blocked', False))
-                        
-                        all_users = db.get_all_users_for_bot(bid)
-                        for user in all_users:
-                            mod_uid = user['user_id']
-                            if check_moderator(mod_uid, bid):
-                                try:
-                                    if is_blocked_flag:
-                                        published_kb = build_published_take_keyboard_blocked(channel_msg_id, user_id)
-                                    else:
-                                        published_kb = build_published_take_keyboard(channel_msg_id, user_id, False)
-                                    await bot.send_message(
-                                        mod_uid,
-                                        f"📝 Тейк-альбом опубликован в канале ({len(messages)} медиа)",
-                                        reply_markup=published_kb
-                                    )
-                                    # Пересылаем все медиа модератору
-                                    for msg in messages:
-                                        await msg.copy_to(mod_uid)
-                                except Exception as e:
-                                    logger.error(f"Ошибка отправки модератору {mod_uid}: {e}")
+# НОВОЕ: Отправляем админам/модераторам с кнопкой "Удалить"
+if sent_messages:
+    channel_msg_ids = [msg.message_id for msg in sent_messages]
+    is_blocked_flag = bool(db.get_bot_data(user_id, bid).get('is_blocked', False))
+    
+    all_users = db.get_all_users_for_bot(bid)
+    for user in all_users:
+        mod_uid = user['user_id']
+        if check_moderator(mod_uid, bid):
+            try:
+                # ИЗМЕНЕНИЕ: Отправляем альбом целиком модератору
+                from aiogram.types import InputMediaPhoto, InputMediaVideo
+                
+                mod_media_group = []
+                for idx, msg in enumerate(messages):
+                    text_caption = msg.caption or "" if idx == 0 else ""
+                    entities = msg.caption_entities if (idx == 0 and hasattr(msg, 'caption_entities')) else None
+                    has_spoiler = getattr(msg, 'has_media_spoiler', False)
                     
-                    logger.info(f"Тейк-альбом от {user_id} опубликован: {len(messages)} медиа")
-                except Exception as e:
-                    logger.error(f"Ошибка публикации тейка-альбома: {e}")
-                    try:
-                        await bot.send_message(user_id, "❌ Ошибка при отправке тейка.")
-                    except Exception:
-                        pass
-            
-            del media_group_buffer[group_id]
+                    if msg.photo:
+                        mod_media_group.append(InputMediaPhoto(
+                            media=msg.photo[-1].file_id,
+                            caption=text_caption,
+                            caption_entities=entities,
+                            has_spoiler=has_spoiler
+                        ))
+                    elif msg.video:
+                        mod_media_group.append(InputMediaVideo(
+                            media=msg.video.file_id,
+                            caption=text_caption,
+                            caption_entities=entities,
+                            has_spoiler=has_spoiler
+                        ))
+                
+                # Отправляем альбом модератору
+                await bot.send_media_group(mod_uid, mod_media_group)
+                
+                # ЗАТЕМ отправляем кнопки управления
+                if is_blocked_flag:
+                    published_kb = build_published_take_keyboard_blocked(channel_msg_ids, user_id)
+                else:
+                    published_kb = build_published_take_keyboard(channel_msg_ids, user_id, False)
+                
+                await bot.send_message(
+                    mod_uid,
+                    f"📝 Тейк-альбом опубликован в канале ({len(messages)} медиа)",
+                    reply_markup=published_kb
+                )
+            except Exception as e:
+                logger.error(f"Ошибка отправки модератору {mod_uid}: {e}")
+    
+    logger.info(f"Тейк-альбом от {user_id} опубликован: {len(messages)} медиа")
+
+except Exception as e:
+    logger.error(f"Ошибка публикации тейка-альбома: {e}")
+    try:
+        await bot.send_message(user_id, "❌ Ошибка при отправке тейка.")
+    except Exception:
+        pass
+
+del media_group_buffer[group_id]
 
         async def process_take_message(message: types.Message, bid: str, bot: Bot):
             """Общая логика обработки одиночного тейка."""
@@ -2609,26 +2641,27 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     )
 
                     # НОВОЕ: Отправляем админам/модераторам с кнопкой "Удалить"
-                    channel_msg_id = sent.message_id
-                    is_blocked_flag = bool(db.get_bot_data(uid, bid).get('is_blocked', False))
+# НОВОЕ: Отправляем админам/модераторам с кнопкой "Удалить"
+channel_msg_ids = [sent.message_id]  # ← ИЗМЕНЕНИЕ: оборачиваем в список
+is_blocked_flag = bool(db.get_bot_data(uid, bid).get('is_blocked', False))
 
-                    all_users = db.get_all_users_for_bot(bid)
-                    for user in all_users:
-                        mod_uid = user['user_id']
-                        if check_moderator(mod_uid, bid):
-                            try:
-                                if is_blocked_flag:
-                                    published_kb = build_published_take_keyboard_blocked(channel_msg_id, uid)
-                                else:
-                                    published_kb = build_published_take_keyboard(channel_msg_id, uid, False)
-                                await bot.send_message(
-                                    mod_uid,
-                                    f"📝 Тейк опубликован в канале",
-                                    reply_markup=published_kb
-                                )
-                                await message.copy_to(mod_uid)
-                            except Exception as e:
-                                logger.error(f"Ошибка отправки модератору {mod_uid}: {e}")
+all_users = db.get_all_users_for_bot(bid)
+for user in all_users:
+    mod_uid = user['user_id']
+    if check_moderator(mod_uid, bid):
+        try:
+            if is_blocked_flag:
+                published_kb = build_published_take_keyboard_blocked(channel_msg_ids, uid)  # ← ИЗМЕНЕНИЕ
+            else:
+                published_kb = build_published_take_keyboard(channel_msg_ids, uid, False)  # ← ИЗМЕНЕНИЕ
+            await bot.send_message(
+                mod_uid,
+                f"📝 Тейк опубликован в канале",
+                reply_markup=published_kb
+            )
+            await message.copy_to(mod_uid)
+        except Exception as e:
+            logger.error(f"Ошибка отправки модератору {mod_uid}: {e}")
 
                     return True
                 else:
@@ -2812,22 +2845,39 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await callback.answer()
 
         @router.callback_query(F.data.startswith("take_delete_"))
-        async def take_delete_from_channel(callback: types.CallbackQuery):
-            """Удаление уже опубликованного тейка из канала."""
-            if not check_moderator(callback.from_user.id, bot_id):
-                await callback.answer("Нет доступа", show_alert=True)
-                return
-            channel_msg_id = int(callback.data[12:])
-            cfg = config.bots.get(bot_id)
-            try:
-                await bot_instance.delete_message(cfg.takes_channel, channel_msg_id)
-                await callback.message.edit_text("✅ Тейк удалён из канала.")
-                logger.info(f"Тейк {channel_msg_id} удалён модератором {callback.from_user.id}")
-            except Exception as e:
-                logger.error(f"Ошибка удаления тейка: {e}")
-                await callback.answer(f"Ошибка удаления: {e}", show_alert=True)
-            await callback.answer()
-
+async def take_delete_from_channel(callback: types.CallbackQuery):
+    """Удаление уже опубликованного тейка из канала (включая медиагруппы)."""
+    if not check_moderator(callback.from_user.id, bot_id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    
+    # ИЗМЕНЕНИЕ: Парсим список ID через запятую
+    msg_ids_str = callback.data[12:]  # Получаем "123,124,125"
+    channel_msg_ids = [int(x) for x in msg_ids_str.split(",")]  # Преобразуем в список
+    
+    cfg = config.bots.get(bot_id)
+    deleted_count = 0
+    errors = []
+    
+    # ИЗМЕНЕНИЕ: Удаляем ВСЕ сообщения из списка
+    for msg_id in channel_msg_ids:
+        try:
+            await bot_instance.delete_message(cfg.takes_channel, msg_id)
+            deleted_count += 1
+            logger.info(f"Тейк {msg_id} удалён модератором {callback.from_user.id}")
+        except Exception as e:
+            logger.error(f"Ошибка удаления тейка {msg_id}: {e}")
+            errors.append(str(e))
+    
+    if deleted_count == len(channel_msg_ids):
+        await callback.message.edit_text(f"✅ Удалено {deleted_count} сообщений из канала.")
+    else:
+        await callback.message.edit_text(
+            f"⚠️ Удалено {deleted_count} из {len(channel_msg_ids)} сообщений.\nОшибки: {', '.join(errors)}"
+        )
+    
+    await callback.answer()
+    
         @router.callback_query(F.data.startswith("user_block_"))
         async def block_user_from_takes(callback: types.CallbackQuery):
             """Блокировка пользователя для тейков."""
