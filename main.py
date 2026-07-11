@@ -2447,7 +2447,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                         
                         if msg.photo:
                             media_group.append(InputMediaPhoto(
-                                media=msg.photo[-1].file_id,
+                                                                media=msg.photo[-1].file_id,
                                 caption=censored if (idx == 0 and has_prof) else (text_caption if idx == 0 else ""),
                                 parse_mode="HTML" if (idx == 0 and has_prof) else None,
                                 caption_entities=entities if (idx == 0 and not has_prof) else None,
@@ -2476,67 +2476,66 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                         pass
                     
                     # НОВОЕ: Отправляем админам/модераторам с кнопкой "Удалить"
-# НОВОЕ: Отправляем админам/модераторам с кнопкой "Удалить"
-if sent_messages:
-    channel_msg_ids = [msg.message_id for msg in sent_messages]
-    is_blocked_flag = bool(db.get_bot_data(user_id, bid).get('is_blocked', False))
-    
-    all_users = db.get_all_users_for_bot(bid)
-    for user in all_users:
-        mod_uid = user['user_id']
-        if check_moderator(mod_uid, bid):
-            try:
-                # ИЗМЕНЕНИЕ: Отправляем альбом целиком модератору
-                from aiogram.types import InputMediaPhoto, InputMediaVideo
+                    if sent_messages:
+                        channel_msg_ids = [msg.message_id for msg in sent_messages]
+                        is_blocked_flag = bool(db.get_bot_data(user_id, bid).get('is_blocked', False))
+                        
+                        all_users = db.get_all_users_for_bot(bid)
+                        for user in all_users:
+                            mod_uid = user['user_id']
+                            if check_moderator(mod_uid, bid):
+                                try:
+                                    # ИЗМЕНЕНИЕ: Отправляем альбом целиком модератору
+                                    from aiogram.types import InputMediaPhoto, InputMediaVideo
+                                    
+                                    mod_media_group = []
+                                    for idx, msg in enumerate(messages):
+                                        text_caption = msg.caption or "" if idx == 0 else ""
+                                        entities = msg.caption_entities if (idx == 0 and hasattr(msg, 'caption_entities')) else None
+                                        has_spoiler = getattr(msg, 'has_media_spoiler', False)
+                                        
+                                        if msg.photo:
+                                            mod_media_group.append(InputMediaPhoto(
+                                                media=msg.photo[-1].file_id,
+                                                caption=text_caption,
+                                                caption_entities=entities,
+                                                has_spoiler=has_spoiler
+                                            ))
+                                        elif msg.video:
+                                            mod_media_group.append(InputMediaVideo(
+                                                media=msg.video.file_id,
+                                                caption=text_caption,
+                                                caption_entities=entities,
+                                                has_spoiler=has_spoiler
+                                            ))
+                                    
+                                    # Отправляем альбом модератору
+                                    await bot.send_media_group(mod_uid, mod_media_group)
+                                    
+                                    # ЗАТЕМ отправляем кнопки управления
+                                    if is_blocked_flag:
+                                        published_kb = build_published_take_keyboard_blocked(channel_msg_ids, user_id)
+                                    else:
+                                        published_kb = build_published_take_keyboard(channel_msg_ids, user_id, False)
+                                    
+                                    await bot.send_message(
+                                        mod_uid,
+                                        f"📝 Тейк-альбом опубликован в канале ({len(messages)} медиа)",
+                                        reply_markup=published_kb
+                                    )
+                                except Exception as e:
+                                    logger.error(f"Ошибка отправки модератору {mod_uid}: {e}")
+                        
+                        logger.info(f"Тейк-альбом от {user_id} опубликован: {len(messages)} медиа")
                 
-                mod_media_group = []
-                for idx, msg in enumerate(messages):
-                    text_caption = msg.caption or "" if idx == 0 else ""
-                    entities = msg.caption_entities if (idx == 0 and hasattr(msg, 'caption_entities')) else None
-                    has_spoiler = getattr(msg, 'has_media_spoiler', False)
-                    
-                    if msg.photo:
-                        mod_media_group.append(InputMediaPhoto(
-                            media=msg.photo[-1].file_id,
-                            caption=text_caption,
-                            caption_entities=entities,
-                            has_spoiler=has_spoiler
-                        ))
-                    elif msg.video:
-                        mod_media_group.append(InputMediaVideo(
-                            media=msg.video.file_id,
-                            caption=text_caption,
-                            caption_entities=entities,
-                            has_spoiler=has_spoiler
-                        ))
-                
-                # Отправляем альбом модератору
-                await bot.send_media_group(mod_uid, mod_media_group)
-                
-                # ЗАТЕМ отправляем кнопки управления
-                if is_blocked_flag:
-                    published_kb = build_published_take_keyboard_blocked(channel_msg_ids, user_id)
-                else:
-                    published_kb = build_published_take_keyboard(channel_msg_ids, user_id, False)
-                
-                await bot.send_message(
-                    mod_uid,
-                    f"📝 Тейк-альбом опубликован в канале ({len(messages)} медиа)",
-                    reply_markup=published_kb
-                )
-            except Exception as e:
-                logger.error(f"Ошибка отправки модератору {mod_uid}: {e}")
-    
-    logger.info(f"Тейк-альбом от {user_id} опубликован: {len(messages)} медиа")
-
-except Exception as e:
-    logger.error(f"Ошибка публикации тейка-альбома: {e}")
-    try:
-        await bot.send_message(user_id, "❌ Ошибка при отправке тейка.")
-    except Exception:
-        pass
-
-del media_group_buffer[group_id]
+                except Exception as e:
+                    logger.error(f"Ошибка публикации тейка-альбома: {e}")
+                    try:
+                        await bot.send_message(user_id, "❌ Ошибка при отправке тейка.")
+                    except Exception:
+                        pass
+            
+            del media_group_buffer[group_id]
 
         async def process_take_message(message: types.Message, bid: str, bot: Bot):
             """Общая логика обработки одиночного тейка."""
