@@ -2081,92 +2081,92 @@ async def process_announcement_media_group_complete(group_id: str, bot: Bot, sta
     del media_group_buffer[group_id]
     await state.clear()
 
-@router.message(AnnouncementStates.WaitingAnnouncement)
-async def process_announcement(message: types.Message, state: FSMContext):
-    """
-    Обработка одиночного объявления (не альбома).
-    """
-    cfg = config.bots.get(bot_id)
-    if not cfg or not cfg.announcement_channel:
-        await message.answer("Канал не настроен.", reply_markup=build_main_menu(bot_id))
-        await state.clear()
-        return
+    @router.message(AnnouncementStates.WaitingAnnouncement)
+    async def process_announcement(message: types.Message, state: FSMContext):
+        """
+        Обработка одиночного объявления (не альбома).
+        """
+        cfg = config.bots.get(bot_id)
+        if not cfg or not cfg.announcement_channel:
+            await message.answer("Канал не настроен.", reply_markup=build_main_menu(bot_id))
+            await state.clear()
+            return
 
-    # Проверяем блокировку именно для объявлений
-    if check_announcement_blocked(message.from_user.id, bot_id):
-        await message.answer(
-            "🚫 Вы заблокированы для отправки объявлений.",
-            reply_markup=build_main_menu(bot_id)
-        )
-        await state.clear()
-        return
-
-    # Собираем модераторов объявлений
-    all_users = db.get_all_users_for_bot(bot_id)
-    announcement_mods = []
-    for user in all_users:
-        ud = db.get_bot_data(user['user_id'], bot_id)
-        if ud.get('is_announcement_mod') and not check_admin(user['user_id'], bot_id):
-            announcement_mods.append(user['user_id'])
-    # Добавляем администраторов
-    for user in all_users:
-        if check_admin(user['user_id'], bot_id) and user['user_id'] not in announcement_mods:
-            announcement_mods.append(user['user_id'])
-
-    if announcement_mods:
-        # Есть модераторы — отправляем на проверку
-        ann_id = str(uuid.uuid4())[:8]
-        ann_key = f"ann_{ann_id}"
-        config.pending_takes[ann_key] = {
-            'user_id': message.from_user.id,
-            'bot_id': bot_id,
-            'chat_id': message.chat.id,
-            'message_id': message.message_id,
-            'type': 'announcement'
-        }
-        config.save()
-
-        is_ann_blocked = check_announcement_blocked(message.from_user.id, bot_id)
-
-        for mod_uid in announcement_mods:
-            try:
-                # ИЗМЕНЕНИЕ: Сначала пересылаем объявление
-                await message.copy_to(mod_uid)
-                
-                # ЗАТЕМ отправляем кнопки
-                if is_ann_blocked:
-                    mod_kb = build_announcement_moderation_keyboard_blocked(ann_id, message.from_user.id)
-                else:
-                    mod_kb = build_announcement_moderation_keyboard(ann_id, message.from_user.id)
-                
-                await bot_instance.send_message(
-                    mod_uid,
-                    f"📢 Новое объявление на проверке",
-                    reply_markup=mod_kb
-                )
-            except Exception as e:
-                logger.error(f"Ошибка отправки модератору объявлений {mod_uid}: {e}")
-
-        await message.answer("📝 Объявление отправлено на модерацию.", reply_markup=build_main_menu(bot_id))
-    else:
-        # Нет модераторов — публикуем сразу через copy_message
-        try:
-            await bot_instance.copy_message(
-                chat_id=cfg.announcement_channel,
-                from_chat_id=message.chat.id,
-                message_id=message.message_id
-            )
-            await message.answer("✅ Ваше объявление опубликовано!", reply_markup=build_main_menu(bot_id))
-            logger.info(f"Объявление от {message.from_user.id} в {cfg.announcement_channel}")
-        except Exception as e:
-            logger.error(f"Ошибка отправки объявления: {e}")
+        # Проверяем блокировку именно для объявлений
+        if check_announcement_blocked(message.from_user.id, bot_id):
             await message.answer(
-                f"❌ Ошибка при отправке объявления: {e}\n"
-                f"Убедитесь что бот является администратором канала.",
+                "🚫 Вы заблокированы для отправки объявлений.",
                 reply_markup=build_main_menu(bot_id)
             )
+            await state.clear()
+            return
 
-    await state.clear()
+        # Собираем модераторов объявлений
+        all_users = db.get_all_users_for_bot(bot_id)
+        announcement_mods = []
+        for user in all_users:
+            ud = db.get_bot_data(user['user_id'], bot_id)
+            if ud.get('is_announcement_mod') and not check_admin(user['user_id'], bot_id):
+                announcement_mods.append(user['user_id'])
+        # Добавляем администраторов
+        for user in all_users:
+            if check_admin(user['user_id'], bot_id) and user['user_id'] not in announcement_mods:
+                announcement_mods.append(user['user_id'])
+
+        if announcement_mods:
+            # Есть модераторы — отправляем на проверку
+            ann_id = str(uuid.uuid4())[:8]
+            ann_key = f"ann_{ann_id}"
+            config.pending_takes[ann_key] = {
+                'user_id': message.from_user.id,
+                'bot_id': bot_id,
+                'chat_id': message.chat.id,
+                'message_id': message.message_id,
+                'type': 'announcement'
+            }
+            config.save()
+
+            is_ann_blocked = check_announcement_blocked(message.from_user.id, bot_id)
+
+            for mod_uid in announcement_mods:
+                try:
+                    # ИЗМЕНЕНИЕ: Сначала пересылаем объявление
+                    await message.copy_to(mod_uid)
+                    
+                    # ЗАТЕМ отправляем кнопки
+                    if is_ann_blocked:
+                        mod_kb = build_announcement_moderation_keyboard_blocked(ann_id, message.from_user.id)
+                    else:
+                        mod_kb = build_announcement_moderation_keyboard(ann_id, message.from_user.id)
+                    
+                    await bot_instance.send_message(
+                        mod_uid,
+                        f"📢 Новое объявление на проверке",
+                        reply_markup=mod_kb
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка отправки модератору объявлений {mod_uid}: {e}")
+
+            await message.answer("📝 Объявление отправлено на модерацию.", reply_markup=build_main_menu(bot_id))
+        else:
+            # Нет модераторов — публикуем сразу через copy_message
+            try:
+                await bot_instance.copy_message(
+                    chat_id=cfg.announcement_channel,
+                    from_chat_id=message.chat.id,
+                    message_id=message.message_id
+                )
+                await message.answer("✅ Ваше объявление опубликовано!", reply_markup=build_main_menu(bot_id))
+                logger.info(f"Объявление от {message.from_user.id} в {cfg.announcement_channel}")
+            except Exception as e:
+                logger.error(f"Ошибка отправки объявления: {e}")
+                await message.answer(
+                    f"❌ Ошибка при отправке объявления: {e}\n"
+                    f"Убедитесь что бот является администратором канала.",
+                    reply_markup=build_main_menu(bot_id)
+                )
+
+        await state.clear()
 
     @router.callback_query(F.data.startswith("ann_approve_"))
     async def announcement_approve(callback: types.CallbackQuery):
