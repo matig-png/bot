@@ -2641,7 +2641,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
                     # НОВОЕ: Отправляем админам/модераторам с кнопкой "Удалить"
 # НОВОЕ: Отправляем админам/модераторам с кнопкой "Удалить"
-                channel_msg_ids = [sent.message_id]  # ← ИЗМЕНЕНИЕ: оборачиваем в список
+                channel_msg_ids = [sent.message_id]
                 is_blocked_flag = bool(db.get_bot_data(uid, bid).get('is_blocked', False))
 
                 all_users = db.get_all_users_for_bot(bid)
@@ -2650,9 +2650,10 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     if check_moderator(mod_uid, bid):
                         try:
                             if is_blocked_flag:
-                                published_kb = build_published_take_keyboard_blocked(channel_msg_ids, uid)  # ← ИЗМЕНЕНИЕ
+                                published_kb = build_published_take_keyboard_blocked(channel_msg_ids, uid)
                             else:
-                                published_kb = build_published_take_keyboard(channel_msg_ids, uid, False)  # ← ИЗМЕНЕНИЕ
+                                published_kb = build_published_take_keyboard(channel_msg_ids, uid, False)
+                            
                             await bot.send_message(
                                 mod_uid,
                                 f"📝 Тейк опубликован в канале",
