@@ -1884,7 +1884,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     async def callback_post_announcement(callback: types.CallbackQuery, state: FSMContext):
         """Кнопка выложить объявление."""
         cfg = config.bots.get(bot_id)
-        logger.info(f"Объявление: bot_id={bot_id}, channel='{cfg.announcement_channel if cfg else 'None'}'")
         if not cfg or not cfg.announcement_channel:
             await callback.answer("Канал для объявлений не настроен.", show_alert=True)
             return
@@ -1894,25 +1893,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         )
         await state.set_state(AnnouncementStates.WaitingAnnouncement)
         await callback.answer()
-
-    # =================== НОВОЕ: Обработчик медиагрупп для объявлений ===================
-    @router.message(AnnouncementStates.WaitingAnnouncement, F.media_group_id)
-    async def process_announcement_media_group(message: types.Message, state: FSMContext):
-        """Обработка медиагруппы объявления."""
-        group_id = f"ann_{message.media_group_id}"
-        
-        if group_id not in media_group_buffer:
-            media_group_buffer[group_id] = {
-                'messages': [],
-                'user_id': message.from_user.id,
-                'bot_id': bot_id,
-                'is_announcement': True,
-                'state': state
-            }
-            # Запускаем таймер обработки
-            asyncio.create_task(process_announcement_media_group_complete(group_id, bot_instance, state))
-        
-        media_group_buffer[group_id]['messages'].append(message)
 
     async def process_announcement_media_group_complete(group_id: str, bot: Bot, state: FSMContext):
         """Завершение обработки медиагруппы объявления."""
@@ -1927,7 +1907,8 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         
         cfg = config.bots.get(bot_id)
         if not cfg or not cfg.announcement_channel:
-            del media_group_buffer[group_id]
+            if group_id in media_group_buffer:
+                del media_group_buffer[group_id]
             return
         
         # Проверяем блокировку для объявлений
@@ -1940,7 +1921,8 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 )
             except Exception:
                 pass
-            del media_group_buffer[group_id]
+            if group_id in media_group_buffer:
+                del media_group_buffer[group_id]
             await state.clear()
             return
         
@@ -1951,17 +1933,15 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             ud = db.get_bot_data(user['user_id'], bot_id)
             if ud.get('is_announcement_mod') and not check_admin(user['user_id'], bot_id):
                 announcement_mods.append(user['user_id'])
-        # Добавляем администраторов
+        
         for user in all_users:
             if check_admin(user['user_id'], bot_id) and user['user_id'] not in announcement_mods:
                 announcement_mods.append(user['user_id'])
         
         if announcement_mods:
-            # Есть модераторы — отправляем на проверку
             ann_id = str(uuid.uuid4())[:8]
             ann_key = f"ann_{ann_id}"
             
-            # Сохраняем все сообщения медиагруппы
             config.pending_takes[ann_key] = {
                 'user_id': user_id,
                 'bot_id': bot_id,
@@ -1985,107 +1965,80 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             
             for mod_uid in announcement_mods:
                 try:
-                    # ИЗМЕНЕНИЕ: Отправляем альбом целиком модератору
                     from aiogram.types import InputMediaPhoto, InputMediaVideo
-                    
                     mod_media_group = []
                     for idx, msg in enumerate(messages):
                         text_caption = msg.caption or "" if idx == 0 else ""
                         entities = msg.caption_entities if (idx == 0 and hasattr(msg, 'caption_entities')) else None
                         has_spoiler = getattr(msg, 'has_media_spoiler', False)
-                        
                         if msg.photo:
-                            mod_media_group.append(InputMediaPhoto(
-                                media=msg.photo[-1].file_id,
-                                caption=text_caption,
-                                caption_entities=entities,
-                                has_spoiler=has_spoiler
-                            ))
+                            mod_media_group.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=text_caption, caption_entities=entities, has_spoiler=has_spoiler))
                         elif msg.video:
-                            mod_media_group.append(InputMediaVideo(
-                                media=msg.video.file_id,
-                                caption=text_caption,
-                                caption_entities=entities,
-                                has_spoiler=has_spoiler
-                            ))
+                            mod_media_group.append(InputMediaVideo(media=msg.video.file_id, caption=text_caption, caption_entities=entities, has_spoiler=has_spoiler))
                     
-                    # Отправляем альбом модератору
                     await bot.send_media_group(mod_uid, mod_media_group)
                     
-                    # ЗАТЕМ отправляем кнопки
                     if is_ann_blocked:
                         mod_kb = build_announcement_moderation_keyboard_blocked(ann_id, user_id)
                     else:
                         mod_kb = build_announcement_moderation_keyboard(ann_id, user_id, False)
                     
-                    await bot.send_message(
-                        mod_uid,
-                        f"📢 Новое объявление (альбом: {len(messages)} медиа) на проверке",
-                        reply_markup=mod_kb
-                    )
+                    await bot.send_message(mod_uid, f"📢 Новое объявление (альбом: {len(messages)} медиа) на проверке", reply_markup=mod_kb)
                 except Exception as e:
-                    logger.error(f"Ошибка отправки альбома модератору объявлений {mod_uid}: {e}")
+                    logger.error(f"Ошибка отправки альбома модератору: {e}")
             
-            try:
-                await bot.send_message(
-                    user_id,
-                    "📝 Объявление отправлено на модерацию.",
-                    reply_markup=build_main_menu(bot_id)
-                )
-            except Exception:
-                pass
+            await bot.send_message(user_id, "📝 Объявление отправлено на модерацию.", reply_markup=build_main_menu(bot_id))
         else:
-            # Нет модераторов — публикуем сразу медиагруппу
+            # Публикация БЕЗ модераторов
             try:
                 from aiogram.types import InputMediaPhoto, InputMediaVideo
-                
                 media_group = []
                 for idx, msg in enumerate(messages):
                     text = msg.caption or "" if idx == 0 else ""
                     entities = msg.caption_entities if (idx == 0 and hasattr(msg, 'caption_entities')) else None
                     has_spoiler = getattr(msg, 'has_media_spoiler', False)
-                    
                     if msg.photo:
-                        media_group.append(InputMediaPhoto(
-                            media=msg.photo[-1].file_id,
-                            caption=text,
-                            caption_entities=entities,
-                            has_spoiler=has_spoiler
-                        ))
+                        media_group.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=text, caption_entities=entities, has_spoiler=has_spoiler))
                     elif msg.video:
-                        media_group.append(InputMediaVideo(
-                            media=msg.video.file_id,
-                            caption=text,
-                            caption_entities=entities,
-                            has_spoiler=has_spoiler
-                        ))
+                        media_group.append(InputMediaVideo(media=msg.video.file_id, caption=text, caption_entities=entities, has_spoiler=has_spoiler))
                 
-                await bot.send_media_group(cfg.announcement_channel, media_group)
-                await bot.send_message(
-                    user_id,
-                    "✅ Ваше объявление опубликовано!",
-                    reply_markup=build_main_menu(bot_id)
-                )
-                logger.info(f"Объявление-альбом от {user_id} в {cfg.announcement_channel}")
+                sent_messages = await bot.send_media_group(cfg.announcement_channel, media_group)
+                
+                # Добавляем кнопки удаления для админов даже при авто-публикации
+                if sent_messages:
+                    msg_ids_str = ",".join([str(m.message_id) for m in sent_messages])
+                    for admin_id in announcement_mods: # Тут будут владельцы/админы
+                        try:
+                            pub_kb = build_published_take_keyboard(msg_ids_str, user_id, False)
+                            await bot.send_message(admin_id, "📢 Объявление опубликовано (авто)", reply_markup=pub_kb)
+                        except: pass
+                
+                await bot.send_message(user_id, "✅ Ваше объявление опубликовано!", reply_markup=build_main_menu(bot_id))
             except Exception as e:
-                logger.error(f"Ошибка отправки объявления-альбома: {e}")
-                try:
-                    await bot.send_message(
-                        user_id,
-                        f"❌ Ошибка при отправке объявления: {e}",
-                        reply_markup=build_main_menu(bot_id)
-                    )
-                except Exception:
-                    pass
+                logger.error(f"Ошибка авто-публикации: {e}")
         
-        del media_group_buffer[group_id]
+        if group_id in media_group_buffer:
+            del media_group_buffer[group_id]
         await state.clear()
+
+    @router.message(AnnouncementStates.WaitingAnnouncement, F.media_group_id)
+    async def process_announcement_media_group(message: types.Message, state: FSMContext):
+        """Обработка медиагруппы объявления."""
+        group_id = f"ann_{message.media_group_id}"
+        if group_id not in media_group_buffer:
+            media_group_buffer[group_id] = {
+                'messages': [],
+                'user_id': message.from_user.id,
+                'bot_id': bot_id,
+                'is_announcement': True,
+                'state': state
+            }
+            asyncio.create_task(process_announcement_media_group_complete(group_id, bot_instance, state))
+        media_group_buffer[group_id]['messages'].append(message)
 
     @router.message(AnnouncementStates.WaitingAnnouncement)
     async def process_announcement(message: types.Message, state: FSMContext):
-        """
-        Обработка одиночного объявления (не альбома).
-        """
+        """Обработка одиночного объявления."""
         register_user(message.from_user, bot_id)
         cfg = config.bots.get(bot_id)
         if not cfg or not cfg.announcement_channel:
@@ -2093,80 +2046,44 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await state.clear()
             return
 
-        # Проверяем блокировку именно для объявлений
         if check_announcement_blocked(message.from_user.id, bot_id):
-            await message.answer(
-                "🚫 Вы заблокированы для отправки объявлений.",
-                reply_markup=build_main_menu(bot_id)
-            )
+            await message.answer("🚫 Вы заблокированы для отправки объявлений.", reply_markup=build_main_menu(bot_id))
             await state.clear()
             return
 
-        # Собираем модераторов объявлений
         all_users = db.get_all_users_for_bot(bot_id)
-        announcement_mods = []
-        for user in all_users:
-            ud = db.get_bot_data(user['user_id'], bot_id)
-            if ud.get('is_announcement_mod') and not check_admin(user['user_id'], bot_id):
-                announcement_mods.append(user['user_id'])
-        # Добавляем администраторов
-        for user in all_users:
-            if check_admin(user['user_id'], bot_id) and user['user_id'] not in announcement_mods:
-                announcement_mods.append(user['user_id'])
+        announcement_mods = [u['user_id'] for u in all_users if (db.get_bot_data(u['user_id'], bot_id).get('is_announcement_mod') or check_admin(u['user_id'], bot_id))]
 
         if announcement_mods:
-            # Есть модераторы — отправляем на проверку
             ann_id = str(uuid.uuid4())[:8]
             ann_key = f"ann_{ann_id}"
             config.pending_takes[ann_key] = {
-                'user_id': message.from_user.id,
-                'bot_id': bot_id,
-                'chat_id': message.chat.id,
-                'message_id': message.message_id,
+                'user_id': message.from_user.id, 'bot_id': bot_id,
+                'chat_id': message.chat.id, 'message_id': message.message_id,
                 'type': 'announcement'
             }
             config.save()
 
             is_ann_blocked = check_announcement_blocked(message.from_user.id, bot_id)
-
             for mod_uid in announcement_mods:
                 try:
-                    # ИЗМЕНЕНИЕ: Сначала пересылаем объявление
                     await message.copy_to(mod_uid)
-                    
-                    # ЗАТЕМ отправляем кнопки
                     if is_ann_blocked:
                         mod_kb = build_announcement_moderation_keyboard_blocked(ann_id, message.from_user.id)
                     else:
                         mod_kb = build_announcement_moderation_keyboard(ann_id, message.from_user.id, False)
-                    
-                    await bot_instance.send_message(
-                        mod_uid,
-                        f"📢 Новое объявление на проверке",
-                        reply_markup=mod_kb
-                    )
+                    await bot_instance.send_message(mod_uid, f"📢 Новое объявление на проверке", reply_markup=mod_kb)
                 except Exception as e:
-                    logger.error(f"Ошибка отправки модератору объявлений {mod_uid}: {e}")
-
+                    logger.error(f"Ошибка отправки модератору: {e}")
             await message.answer("📝 Объявление отправлено на модерацию.", reply_markup=build_main_menu(bot_id))
         else:
-            # Нет модераторов — публикуем сразу через copy_message
             try:
-                await bot_instance.copy_message(
-                    chat_id=cfg.announcement_channel,
-                    from_chat_id=message.chat.id,
-                    message_id=message.message_id
-                )
-                await message.answer("✅ Ваше объявление опубликовано!", reply_markup=build_main_menu(bot_id))
-                logger.info(f"Объявление от {message.from_user.id} в {cfg.announcement_channel}")
+                sent = await bot_instance.copy_message(chat_id=cfg.announcement_channel, from_chat_id=message.chat.id, message_id=message.message_id)
+                # Кнопка удаления для админа
+                pub_kb = build_published_take_keyboard(str(sent.message_id), message.from_user.id, False)
+                await message.answer("✅ Опубликовано!", reply_markup=build_main_menu(bot_id))
             except Exception as e:
-                logger.error(f"Ошибка отправки объявления: {e}")
-                await message.answer(
-                    f"❌ Ошибка при отправке объявления: {e}\n"
-                    f"Убедитесь что бот является администратором канала.",
-                    reply_markup=build_main_menu(bot_id)
-                )
-
+                logger.error(f"Ошибка публикации: {e}")
         await state.clear()
 
     @router.callback_query(F.data.startswith("ann_approve_"))
@@ -2180,51 +2097,33 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             return
         cfg = config.bots.get(bot_id)
         try:
-            # Проверяем тип объявления
             if ann_data.get('type') == 'announcement_media_group':
-                # Это медиагруппа
                 from aiogram.types import InputMediaPhoto, InputMediaVideo
-                
                 media_group = []
                 for idx, media_info in enumerate(ann_data['media_group']):
                     text = media_info.get('caption', '') if idx == 0 else ""
                     entities = restore_entities(media_info.get('caption_entities')) if idx == 0 else None
                     has_spoiler = media_info.get('has_spoiler', False)
-                    
                     if media_info.get('photo'):
-                        media_group.append(InputMediaPhoto(
-                            media=media_info['photo'],
-                            caption=text,
-                            caption_entities=entities,
-                            has_spoiler=has_spoiler
-                        ))
+                        media_group.append(InputMediaPhoto(media=media_info['photo'], caption=text, caption_entities=entities, has_spoiler=has_spoiler))
                     elif media_info.get('video'):
-                        media_group.append(InputMediaVideo(
-                            media=media_info['video'],
-                            caption=text,
-                            caption_entities=entities,
-                            has_spoiler=has_spoiler
-                        ))
+                        media_group.append(InputMediaVideo(media=media_info['video'], caption=text, caption_entities=entities, has_spoiler=has_spoiler))
                 
-                await bot_instance.send_media_group(cfg.announcement_channel, media_group)
-                logger.info(f"Объявление-альбом одобрено: {len(media_group)} медиа")
+                sent_messages = await bot_instance.send_media_group(cfg.announcement_channel, media_group)
+                msg_ids_str = ",".join([str(m.message_id) for m in sent_messages])
+                pub_kb = build_published_take_keyboard(msg_ids_str, ann_data['user_id'], False)
+                await callback.message.edit_text("✅ Альбом одобрен и опубликован.", reply_markup=pub_kb)
             else:
-                # Одиночное объявление
-                await bot_instance.copy_message(
-                    chat_id=cfg.announcement_channel,
-                    from_chat_id=ann_data['chat_id'],
-                    message_id=ann_data['message_id']
-                )
+                sent = await bot_instance.copy_message(chat_id=cfg.announcement_channel, from_chat_id=ann_data['chat_id'], message_id=ann_data['message_id'])
+                pub_kb = build_published_take_keyboard(str(sent.message_id), ann_data['user_id'], False)
+                await callback.message.edit_text("✅ Одобрено и опубликовано.", reply_markup=pub_kb)
             
             del config.pending_takes[ann_key]
             config.save()
-            await callback.message.edit_text("✅ Объявление одобрено и опубликовано.")
-            try:
-                await bot_instance.send_message(ann_data['user_id'], "✅ Ваше объявление одобрено и опубликовано!")
-            except Exception:
-                pass
+            try: await bot_instance.send_message(ann_data['user_id'], "✅ Ваше объявление опубликовано!")
+            except: pass
         except Exception as e:
-            logger.error(f"Ошибка одобрения объявления: {e}")
+            logger.error(f"Ошибка одобрения: {e}")
             await callback.answer(f"Ошибка: {e}", show_alert=True)
         await callback.answer()
 
