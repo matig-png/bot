@@ -2844,38 +2844,38 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await callback.answer()
 
         @router.callback_query(F.data.startswith("take_delete_"))
-async def take_delete_from_channel(callback: types.CallbackQuery):
-    """Удаление уже опубликованного тейка из канала (включая медиагруппы)."""
-    if not check_moderator(callback.from_user.id, bot_id):
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-    
-    # ИЗМЕНЕНИЕ: Парсим список ID через запятую
-    msg_ids_str = callback.data[12:]  # Получаем "123,124,125"
-    channel_msg_ids = [int(x) for x in msg_ids_str.split(",")]  # Преобразуем в список
-    
-    cfg = config.bots.get(bot_id)
-    deleted_count = 0
-    errors = []
-    
-    # ИЗМЕНЕНИЕ: Удаляем ВСЕ сообщения из списка
-    for msg_id in channel_msg_ids:
-        try:
-            await bot_instance.delete_message(cfg.takes_channel, msg_id)
-            deleted_count += 1
-            logger.info(f"Тейк {msg_id} удалён модератором {callback.from_user.id}")
-        except Exception as e:
-            logger.error(f"Ошибка удаления тейка {msg_id}: {e}")
-            errors.append(str(e))
-    
-    if deleted_count == len(channel_msg_ids):
-        await callback.message.edit_text(f"✅ Удалено {deleted_count} сообщений из канала.")
-    else:
-        await callback.message.edit_text(
-            f"⚠️ Удалено {deleted_count} из {len(channel_msg_ids)} сообщений.\nОшибки: {', '.join(errors)}"
-        )
-    
-    await callback.answer()
+        async def take_delete_from_channel(callback: types.CallbackQuery):
+            """Удаление уже опубликованного тейка из канала (включая медиагруппы)."""
+            if not check_moderator(callback.from_user.id, bot_id):
+                await callback.answer("Нет доступа", show_alert=True)
+                return
+            
+            # ИЗМЕНЕНИЕ: Парсим список ID через запятую
+            msg_ids_str = callback.data[12:]  # Получаем "123,124,125"
+            channel_msg_ids = [int(x) for x in msg_ids_str.split(",")]  # Преобразуем в список
+            
+            cfg = config.bots.get(bot_id)
+            deleted_count = 0
+            errors = []
+            
+            # ИЗМЕНЕНИЕ: Удаляем ВСЕ сообщения из списка
+            for msg_id in channel_msg_ids:
+                try:
+                    await bot_instance.delete_message(cfg.takes_channel, msg_id)
+                    deleted_count += 1
+                    logger.info(f"Тейк {msg_id} удалён модератором {callback.from_user.id}")
+                except Exception as e:
+                    logger.error(f"Ошибка удаления тейка {msg_id}: {e}")
+                    errors.append(str(e))
+            
+            if deleted_count == len(channel_msg_ids):
+                await callback.message.edit_text(f"✅ Удалено {deleted_count} сообщений из канала.")
+            else:
+                await callback.message.edit_text(
+                    f"⚠️ Удалено {deleted_count} из {len(channel_msg_ids)} сообщений.\nОшибки: {', '.join(errors)}"
+                )
+            
+            await callback.answer()
     
         @router.callback_query(F.data.startswith("user_block_"))
         async def block_user_from_takes(callback: types.CallbackQuery):
