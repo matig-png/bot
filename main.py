@@ -1371,6 +1371,85 @@ async def delayed_delete_message(bot_instance: Bot, channel: str, message_id: in
     except Exception as e:
         logger.error(f"Ошибка отложенного удаления: {e}")
 
+# =================== УНИВЕРСАЛЬНЫЙ ПЕРЕВОД В ГРУППЕ ===================
+
+@router.message(F.text.regexp(r'^/?(перевести|перевод)\s+(\d+)\s+(.+)\(', flags=re.IGNORECASE))
+@router.message(F.text.regexp(r'^(\d+)\s+(.+)\)'))
+async def fast_transfer(message: types.Message):
+    """Быстрый перевод в любом чате, в том числе в группе"""
+    
+    # Парсим сообщение
+    match1 = re.match(r'^/?(перевести|перевод)\s+(\d+)\s+(.+)\(', message.text, flags=re.IGNORECASE)
+    match2 = re.match(r'^(\d+)\s+(.+)\)', message.text)
+    
+    if match1:
+        amount = float(match1.group(2))
+        receiver_input = match1.group(3).strip()
+    elif match2:
+        amount = float(match2.group(1))
+        receiver_input = match2.group(2).strip()
+    else:
+        return
+    
+    sender_id = message.from_user.id
+    
+    # Проверки
+    if amount <= 0:
+        await message.reply("❌ Введите корректную сумму")
+        return
+    
+    sender_data = db.get_bot_data(sender_id, bot_id)
+    if sender_data.get('is_frozen'):
+        await message.reply("❌ Ваш счёт заморожен")
+        return
+    
+    sender_balance = db.get_balance(sender_id, bot_id)
+    if sender_balance != float('inf') and sender_balance < amount:
+        await message.reply(f"❌ Недостаточно средств. Баланс: {sender_balance:.0f}")
+        return
+    
+    # Ищем получателя
+    receiver_id = db.find_user_by_input(receiver_input)
+    
+    if not receiver_id:
+        await message.reply(f"❌ Пользователь `{receiver_input}` не найден")
+        return
+    
+    if receiver_id == sender_id:
+        await message.reply("❌ Нельзя перевести самому себе")
+        return
+    
+    receiver_data = db.get_bot_data(receiver_id, bot_id)
+    if receiver_data.get('is_frozen'):
+        await message.reply("❌ Счёт получателя заморожен")
+        return
+    
+    # Выполняем перевод
+    success, error = do_transfer(sender_id, receiver_id, bot_id, amount)
+    
+    if success:
+        receiver_name = get_user_display_name(receiver_id)
+        
+        await message.reply(
+            f"✅ Переведено {amount:.0f} {bot_config.currency_emoji}\n"
+            f"Получатель: {receiver_name}"
+        )
+        
+        # Уведомляем получателя
+        try:
+            await bot_instance.send_message(
+                receiver_id,
+                f"💰 Вам перевели {amount:.0f} {bot_config.currency_emoji}\n"
+                f"От: {get_user_display_name(sender_id)}"
+            )
+        except Exception:
+            pass
+        
+        logger.info(f"Быстрый перевод: {sender_id} → {receiver_id} | {amount}")
+        
+    else:
+        await message.reply(f"❌ Ошибка перевода: {error}")
+
 # ====================== АУКЦИОН ======================
 
 async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
