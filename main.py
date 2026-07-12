@@ -2640,33 +2640,32 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     )
 
                     # НОВОЕ: Отправляем админам/модераторам с кнопкой "Удалить"
-# НОВОЕ: Отправляем админам/модераторам с кнопкой "Удалить"
-                channel_msg_ids = [sent.message_id]
-                is_blocked_flag = bool(db.get_bot_data(uid, bid).get('is_blocked', False))
+                    channel_msg_ids = [sent.message_id]
+                    is_blocked_flag = bool(db.get_bot_data(uid, bid).get('is_blocked', False))
 
-                all_users = db.get_all_users_for_bot(bid)
-                for user in all_users:
-                    mod_uid = user['user_id']
-                    if check_moderator(mod_uid, bid):
-                        try:
-                            if is_blocked_flag:
-                                published_kb = build_published_take_keyboard_blocked(channel_msg_ids, uid)
-                            else:
-                                published_kb = build_published_take_keyboard(channel_msg_ids, uid, False)
-                            
-                            await bot.send_message(
-                                mod_uid,
-                                f"📝 Тейк опубликован в канале",
-                                reply_markup=published_kb
-                            )
-                            await message.copy_to(mod_uid)
-                        except Exception as e:
-                            logger.error(f"Ошибка отправки модератору {mod_uid}: {e}")
+                    all_users = db.get_all_users_for_bot(bid)
+                    for user in all_users:
+                        mod_uid = user['user_id']
+                        if check_moderator(mod_uid, bid):
+                            try:
+                                if is_blocked_flag:
+                                    published_kb = build_published_take_keyboard_blocked(channel_msg_ids, uid)
+                                else:
+                                    published_kb = build_published_take_keyboard(channel_msg_ids, uid, False)
+                                
+                                await bot.send_message(
+                                    mod_uid,
+                                    f"📝 Тейк опубликован в канале",
+                                    reply_markup=published_kb
+                                )
+                                await message.copy_to(mod_uid)
+                            except Exception as e:
+                                logger.error(f"Ошибка отправки модератору {mod_uid}: {e}")
 
-                return True
-            else:
-                await message.answer("❌ Ошибка при отправке тейка.", reply_markup=build_main_menu(bid))
-                return False
+                    return True
+                else:
+                    await message.answer("❌ Ошибка при отправке тейка.", reply_markup=build_main_menu(bid))
+                    return False
 
         @router.callback_query(F.data == "send_take")
         async def callback_send_take(callback: types.CallbackQuery, state: FSMContext):
