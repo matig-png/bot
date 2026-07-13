@@ -1582,81 +1582,81 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
     # =================== ПЕРЕВОДЫ ИЗ ГРУППЫ ===================
 
-@router.message(F.text.regexp(r'(?i)^перевести?\s+(\d+(?:\.\d+)?)\s+(.+)'))
-async def group_transfer(message: types.Message):
-    """Перевод валюты через команду в группе: перевести 100 @username"""
-    # Работает только в группах
-    if message.chat.type not in ("group", "supergroup"):
-        return
-    
-    register_user(message.from_user, bot_id)
-    
-    # Парсим сумму и получателя
-    import re
-    match = re.match(r'(?i)^перевести?\s+(\d+(?:\.\d+)?)\s+(.+)', message.text)
-    if not match:
-        return
-    
-    try:
-        amount = float(match.group(1))
-        receiver_input = match.group(2).strip()
-    except ValueError:
-        await message.reply("❌ Неверный формат суммы")
-        return
-    
-    if amount <= 0:
-        await message.reply("❌ Сумма должна быть больше 0")
-        return
-    
-    # Ищем получателя
-    receiver_id = db.find_user_by_input(receiver_input)
-    if not receiver_id:
-        await message.reply(f"❌ Пользователь '{receiver_input}' не найден")
-        return
-    
-    if receiver_id == message.from_user.id:
-        await message.reply("❌ Нельзя перевести самому себе")
-        return
-    
-    # Проверяем заморозку счетов
-    sender_data = db.get_bot_data(message.from_user.id, bot_id)
-    receiver_data = db.get_bot_data(receiver_id, bot_id)
-    
-    if sender_data.get('is_frozen'):
-        await message.reply("❄️ Ваш счёт заморожен")
-        return
-    
-    if receiver_data.get('is_frozen'):
-        await message.reply("❄️ Счёт получателя заморожен")
-        return
-    
-    # Выполняем перевод
-    cfg = config.bots.get(bot_id)
-    success, error = do_transfer(message.from_user.id, receiver_id, bot_id, amount)
-    
-    if success:
-        receiver_user = db.get_user(receiver_id)
-        sender_name = message.from_user.full_name
-        receiver_name = f"@{receiver_user['username']}" if receiver_user.get('username') else receiver_user.get('name', 'Неизвестный')
+    @router.message(F.text.regexp(r'(?i)^перевести?\s+(\d+(?:\.\d+)?)\s+(.+)'))
+    async def group_transfer(message: types.Message):
+        """Перевод валюты через команду в группе: перевести 100 @username"""
+        # Работает только в группах
+        if message.chat.type not in ("group", "supergroup"):
+            return
         
-        await message.reply(
-            f"✅ Перевод выполнен!\n"
-            f"💸 {sender_name} → {receiver_name}\n"
-            f"💰 Сумма: {amount:.0f} {cfg.currency_emoji}"
-        )
+        register_user(message.from_user, bot_id)
         
-        # Уведомляем получателя в ЛС (если возможно)
+        # Парсим сумму и получателя
+        import re
+        match = re.match(r'(?i)^перевести?\s+(\d+(?:\.\d+)?)\s+(.+)', message.text)
+        if not match:
+            return
+        
         try:
-            await bot_instance.send_message(
-                receiver_id,
-                f"💰 Вам перевели {amount:.0f} {cfg.currency_emoji}\n"
-                f"От: {sender_name}\n"
-                f"В группе: {message.chat.title}"
+            amount = float(match.group(1))
+            receiver_input = match.group(2).strip()
+        except ValueError:
+            await message.reply("❌ Неверный формат суммы")
+            return
+        
+        if amount <= 0:
+            await message.reply("❌ Сумма должна быть больше 0")
+            return
+        
+        # Ищем получателя
+        receiver_id = db.find_user_by_input(receiver_input)
+        if not receiver_id:
+            await message.reply(f"❌ Пользователь '{receiver_input}' не найден")
+            return
+        
+        if receiver_id == message.from_user.id:
+            await message.reply("❌ Нельзя перевести самому себе")
+            return
+        
+        # Проверяем заморозку счетов
+        sender_data = db.get_bot_data(message.from_user.id, bot_id)
+        receiver_data = db.get_bot_data(receiver_id, bot_id)
+        
+        if sender_data.get('is_frozen'):
+            await message.reply("❄️ Ваш счёт заморожен")
+            return
+        
+        if receiver_data.get('is_frozen'):
+            await message.reply("❄️ Счёт получателя заморожен")
+            return
+        
+        # Выполняем перевод
+        cfg = config.bots.get(bot_id)
+        success, error = do_transfer(message.from_user.id, receiver_id, bot_id, amount)
+        
+        if success:
+            receiver_user = db.get_user(receiver_id)
+            sender_name = message.from_user.full_name
+            receiver_name = f"@{receiver_user['username']}" if receiver_user.get('username') else receiver_user.get('name', 'Неизвестный')
+            
+            await message.reply(
+                f"✅ Перевод выполнен!\n"
+                f"💸 {sender_name} → {receiver_name}\n"
+                f"💰 Сумма: {amount:.0f} {cfg.currency_emoji}"
             )
-        except Exception:
-            pass
-    else:
-        await message.reply(f"❌ {error}")
+            
+            # Уведомляем получателя в ЛС (если возможно)
+            try:
+                await bot_instance.send_message(
+                    receiver_id,
+                    f"💰 Вам перевели {amount:.0f} {cfg.currency_emoji}\n"
+                    f"От: {sender_name}\n"
+                    f"В группе: {message.chat.title}"
+                )
+            except Exception:
+                pass
+        else:
+            await message.reply(f"❌ {error}")
 
     @router.message(Command("cancel"))
     async def cmd_cancel(message: types.Message, state: FSMContext):
