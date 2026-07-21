@@ -2639,6 +2639,37 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                         f"✅ Тейк отправлен в канал!\n📝 {new_msg}",
                         reply_markup=build_main_menu(bid)
                     )
+                    
+                if sent:
+                    db.add_take_timestamp(uid, bid)
+    
+    # НОВОЕ: Сохраняем тейк для редактирования
+                    content_type = 'text'
+                    file_ids = []
+                    caption = message.text or message.caption
+    
+                    if message.photo:
+                        content_type = 'photo'
+                        file_ids = [message.photo[-1].file_id]
+                    elif message.video:
+                        content_type = 'video'
+                        file_ids = [message.video.file_id]
+                    elif message.animation:
+                        content_type = 'animation'
+                        file_ids = [message.animation.file_id]
+    
+                    db.save_published_take(
+                        user_id=uid,
+                        bot_id=bid,
+                        channel_msg_id=sent.message_id,
+                        chat_id=cfg.takes_channel,
+                        content_type=content_type,
+                        file_ids=file_ids,
+                        caption=caption
+                    )
+    
+                    _, new_remaining, new_msg = can_send_take(uid, bid)
+    # ... остальной код
 
                     # НОВОЕ: Отправляем админам/модераторам с кнопкой "Удалить"
                     channel_msg_ids = [sent.message_id]
