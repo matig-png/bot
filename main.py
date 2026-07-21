@@ -2803,14 +2803,16 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             """Автоматическая обработка медиагруппы (альбома)."""
             if message.chat.type in ("channel", "group", "supergroup"):
                 return
+    
             current_state = await state.get_state()
-            if current_state == TakeStates.WaitingTake:
+    
+            # НОВОЕ: Пропускаем если идёт редактирование или ожидание тейка
+            if current_state in (TakeStates.WaitingEdit, TakeStates.WaitingTake):
                 return
-            
+    
             group_id = f"take_{message.media_group_id}"
             text = message.text or message.caption or ""
-            
-            # Ловим первое фото с #тейк ИЛИ последующие фото из этого же альбома
+    
             if "#тейк" in text.lower() or group_id in media_group_buffer:
                 await handle_take_media_group(message, bot_id, bot_instance, state)
 
