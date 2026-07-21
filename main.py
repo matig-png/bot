@@ -553,7 +553,10 @@ class TransferStates(StatesGroup):
 
 class TakeStates(StatesGroup):
     WaitingTake = State()
+    WaitingEdit = State()  # ← Добавить
 
+class BroadcastStates(StatesGroup):  # ← Новый класс
+    WaitingMessage = State()
 
 class AnnouncementStates(StatesGroup):
     WaitingAnnouncement = State()
