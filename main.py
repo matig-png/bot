@@ -4192,6 +4192,8 @@ async def main():
     logger.info("Загрузка конфигурации...")
     config.load()
 
+    asyncio.create_task(background_cleanup_task())
+
     main_cfg = config.bots.get("main")
     if main_cfg:
         logger.info(f"Канал объявлений главного бота: '{main_cfg.announcement_channel}'")
