@@ -1041,6 +1041,9 @@ def build_admin_menu(uid: int, bot_id: str) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="🔧 Цензура", callback_data="adm_censor"),
             InlineKeyboardButton(text="👮 Модераторы", callback_data="adm_mods")
         )
+        builder.row(
+            InlineKeyboardButton(text="📢 Рассылка", callback_data="adm_broadcast")  # ← Добавить
+        )
 
         if bot_cfg and "shop" in bot_cfg.modules:
             builder.row(
