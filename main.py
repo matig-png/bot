@@ -4358,6 +4358,17 @@ async def main():
     logger.info("Запуск главного бота...")
     await main_dp.start_polling(main_bot)
 
+async def background_cleanup_task():
+    """Фоновая задача очистки старых тейков."""
+    while True:
+        try:
+            await asyncio.sleep(3600)  # Каждый час
+            deleted = db.cleanup_old_takes(hours=48)
+            if deleted > 0:
+                logger.info(f"🗑️ Автоочистка: удалено {deleted} старых тейков")
+        except Exception as e:
+            logger.error(f"Ошибка автоочистки: {e}")
+
 
 if __name__ == "__main__":
     print("🚀 Запуск бота...", flush=True)
