@@ -4109,6 +4109,77 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
 
         await state.clear()
 
+        # =================== РАССЫЛКА (ТОЛЬКО ВЛАДЕЛЕЦ) ===================
+
+    @router.callback_query(F.data == "adm_broadcast")
+    async def callback_broadcast(callback: types.CallbackQuery, state: FSMContext):
+        """Начать рассылку (только владелец)."""
+        if not check_owner(callback.from_user.id, bot_id):
+            await callback.answer("Доступно только владельцу", show_alert=True)
+            return
+        
+        await callback.message.edit_text(
+            "📢 Рассылка сообщения всем пользователям\n\n"
+            "Отправьте сообщение, которое нужно разослать.\n"
+            "Поддерживаются: текст, фото, видео, GIF",
+            reply_markup=build_cancel_keyboard()
+        )
+        await state.set_state(BroadcastStates.WaitingMessage)
+        await callback.answer()
+
+    @router.message(BroadcastStates.WaitingMessage)
+    async def process_broadcast(message: types.Message, state: FSMContext):
+        """Обработка и выполнение рассылки."""
+        if not check_owner(message.from_user.id, bot_id):
+            await state.clear()
+            return
+        
+        all_users = db.get_all_users_for_bot(bot_id)
+        total = len(all_users)
+        success = 0
+        failed = 0
+        
+        status_msg = await message.answer(
+            f"📢 Начинаю рассылку...\n\n"
+            f"Всего пользователей: {total}\n"
+            f"Отправлено: 0\n"
+            f"Ошибок: 0"
+        )
+        
+        for idx, user in enumerate(all_users, 1):
+            try:
+                await message.copy_to(user['user_id'])
+                success += 1
+            except Exception as e:
+                failed += 1
+                logger.warning(f"Не удалось отправить {user['user_id']}: {e}")
+            
+            # Обновляем статус каждые 10 пользователей
+            if idx % 10 == 0:
+                try:
+                    await status_msg.edit_text(
+                        f"📢 Рассылка в процессе...\n\n"
+                        f"Всего: {total}\n"
+                        f"✅ Отправлено: {success}\n"
+                        f"❌ Ошибок: {failed}\n"
+                        f"⏳ Прогресс: {idx}/{total}"
+                    )
+                except:
+                    pass
+            
+            await asyncio.sleep(0.05)  # Задержка против флуда
+        
+        await status_msg.edit_text(
+            f"✅ Рассылка завершена!\n\n"
+            f"Всего: {total}\n"
+            f"✅ Доставлено: {success}\n"
+            f"❌ Не доставлено: {failed}",
+            reply_markup=build_main_menu(bot_id)
+        )
+        
+        logger.info(f"📢 Рассылка завершена: {success}/{total}")
+        await state.clear()
+
     dp.include_router(router)
 
 
