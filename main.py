@@ -2816,14 +2816,22 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
         @router.message(F.text.contains("#тейк") | F.caption.contains("#тейк"))
         async def auto_forward_take(message: types.Message, state: FSMContext):
-            """Автоматическая обработка одиночного тейка."""
+    """Автоматическая обработка одиночного тейка."""
             if message.chat.type in ("channel", "group", "supergroup"):
                 return
+    
+            # НОВОЕ: Пропускаем если идёт редактирование
             current_state = await state.get_state()
+            if current_state == TakeStates.WaitingEdit:
+                return
+    
+            # НОВОЕ: Пропускаем если ожидаем тейк через кнопку
             if current_state == TakeStates.WaitingTake:
                 return
+    
             await process_take_message(message, bot_id, bot_instance)
 
+    
         @router.callback_query(F.data.startswith("take_approve_"))
         async def take_approve(callback: types.CallbackQuery):
             take_id = callback.data[13:]
