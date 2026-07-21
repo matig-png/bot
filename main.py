@@ -2454,6 +2454,18 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     sent_messages = await bot.send_media_group(cfg.takes_channel, media_group)
                     db.add_take_timestamp(user_id, bid)
                     _, new_remaining, new_msg = can_send_take(user_id, bid)
+
+# НОВОЕ: Сохраняем альбом (с пометкой media_group)
+                    if sent_messages:
+                        db.save_published_take(
+                            user_id=user_id,
+                            bot_id=bid,
+                            channel_msg_id=sent_messages[0].message_id,  # Первое сообщение альбома
+                            chat_id=cfg.takes_channel,
+                            content_type='media_group',
+                            file_ids=[msg.photo[-1].file_id if msg.photo else msg.video.file_id for msg in messages],
+                            caption=(messages[0].caption if messages else None)
+                        )
                     
                     try:
                         await bot.send_message(
