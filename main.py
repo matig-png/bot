@@ -2984,6 +2984,285 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 pass
             await callback.answer("✅ Разблокирован для тейков", show_alert=True)
 
+        # =================== РЕДАКТИРОВАНИЕ ТЕЙКОВ ===================
+
+    @router.callback_query(F.data == "my_takes")
+    async def callback_my_takes(callback: types.CallbackQuery):
+        """Показать список тейков для редактирования."""
+        recent_takes = db.get_user_recent_takes(callback.from_user.id, bot_id, hours=24)
+        
+        if not recent_takes:
+            await callback.answer("📝 У вас нет опубликованных тейков за последние 24 часа", show_alert=True)
+            return
+        
+        builder = InlineKeyboardBuilder()
+        for take in recent_takes[:5]:  # Показываем до 5 последних
+            time_ago = datetime.now() - datetime.fromisoformat(take['published_at'])
+            hours = int(time_ago.total_seconds() // 3600)
+            caption_preview = (take['caption'] or "Без текста")[:30]
+            if len(take['caption'] or "") > 30:
+                caption_preview += "..."
+            
+            builder.row(InlineKeyboardButton(
+                text=f"📝 {caption_preview} ({hours}ч назад)",
+                callback_data=f"show_take_{take['id']}"
+            ))
+        
+        builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="back_main"))
+        
+        await callback.message.edit_text(
+            "Ваши последние тейки:\n\n⏰ Доступно редактирование в течение 24 часов",
+            reply_markup=builder.as_markup()
+        )
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("show_take_"))
+    async def show_take_options(callback: types.CallbackQuery):
+        """Показать опции для тейка (редактировать/удалить)."""
+        take_id = int(callback.data[10:])
+        
+        try:
+            take = db.supabase.table('published_takes').select('*').eq('id', take_id).execute()
+            if not take.data:
+                await callback.answer("Тейк не найден", show_alert=True)
+                return
+            
+            take_data = take.data[0]
+            
+            # Проверяем срок
+            published = datetime.fromisoformat(take_data['published_at'])
+            hours_ago = (datetime.now() - published).total_seconds() / 3600
+            
+            if hours_ago > 24:
+                await callback.answer("⏰ Срок редактирования истёк (24 часа)", show_alert=True)
+                return
+            
+            builder = InlineKeyboardBuilder()
+            
+            # Кнопка редактирования (только для НЕ медиагрупп)
+            if take_data['content_type'] != 'media_group':
+                builder.row(InlineKeyboardButton(
+                    text="✏️ Редактировать",
+                    callback_data=f"edit_take_{take_id}"
+                ))
+            else:
+                builder.row(InlineKeyboardButton(
+                    text="⚠️ Альбомы нельзя редактировать",
+                    callback_data="noop"
+                ))
+            
+            builder.row(InlineKeyboardButton(
+                text="🗑 Удалить из канала",
+                callback_data=f"delete_my_take_{take_id}"
+            ))
+            builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="my_takes"))
+            
+            caption_text = take_data.get('caption', 'Без текста')[:100]
+            await callback.message.edit_text(
+                f"📝 Тейк:\n{caption_text}\n\n⏰ Опубликован {int(hours_ago)}ч назад",
+                reply_markup=builder.as_markup()
+            )
+            
+        except Exception as e:
+            logger.error(f"Ошибка показа опций тейка: {e}")
+            await callback.answer("Ошибка", show_alert=True)
+        await callback.answer()
+
+    @router.callback_query(F.data.startswith("edit_take_"))
+    async def edit_take_start(callback: types.CallbackQuery, state: FSMContext):
+        """Начать редактирование тейка."""
+        take_id = int(callback.data[10:])
+        
+        try:
+            take = db.supabase.table('published_takes').select('*').eq('id', take_id).execute()
+            if not take.data:
+                await callback.answer("Тейк не найден", show_alert=True)
+                return
+            
+            take_data = take.data[0]
+            
+            # Проверяем срок
+            published = datetime.fromisoformat(take_data['published_at'])
+            if datetime.now() - published > timedelta(hours=24):
+                await callback.answer("⏰ Срок редактирования истёк (24 часа)", show_alert=True)
+                return
+            
+            # Сохраняем данные
+            await state.update_data(edit_take_id=take_id, take_data=take_data)
+            
+            current_text = take_data.get('caption', 'Без текста')[:100]
+            await callback.message.edit_text(
+                f"✏️ Отправьте новый вариант тейка\n\n"
+                f"Текущий: {current_text}...\n\n"
+                f"💡 Можете отправить:\n"
+                f"• Текст (если тейк текстовый)\n"
+                f"• Фото (заменит текущее медиа)\n"
+                f"• Видео (заменит текущее медиа)\n"
+                f"• GIF (заменит текущее медиа)",
+                reply_markup=build_cancel_keyboard()
+            )
+            await state.set_state(TakeStates.WaitingEdit)
+            
+        except Exception as e:
+            logger.error(f"Ошибка начала редактирования: {e}")
+            await callback.answer("Ошибка", show_alert=True)
+        await callback.answer()
+
+    @router.message(TakeStates.WaitingEdit)
+    async def process_edit_take(message: types.Message, state: FSMContext):
+        """Обработка нового варианта тейка."""
+        data = await state.get_data()
+        take_data = data['take_data']
+        
+        try:
+            cfg = config.bots.get(bot_id)
+            chat_id = take_data['chat_id']
+            msg_id = take_data['channel_message_id']
+            
+            # Проверяем тип
+            if take_data['content_type'] == 'media_group':
+                await message.answer(
+                    "❌ Альбомы нельзя редактировать через Telegram API.\n"
+                    "Вы можете удалить тейк и отправить новый.",
+                    reply_markup=build_main_menu(bot_id)
+                )
+                await state.clear()
+                return
+            
+            from aiogram.types import InputMediaPhoto, InputMediaVideo, InputMediaAnimation
+            
+            new_type = None
+            new_file_ids = []
+            new_caption = message.text or message.caption or ""
+            
+            if message.photo:
+                await bot_instance.edit_message_media(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    media=InputMediaPhoto(
+                        media=message.photo[-1].file_id,
+                        caption=new_caption,
+                        has_spoiler=getattr(message, 'has_media_spoiler', False)
+                    )
+                )
+                new_type = 'photo'
+                new_file_ids = [message.photo[-1].file_id]
+                
+            elif message.video:
+                await bot_instance.edit_message_media(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    media=InputMediaVideo(
+                        media=message.video.file_id,
+                        caption=new_caption,
+                        has_spoiler=getattr(message, 'has_media_spoiler', False)
+                    )
+                )
+                new_type = 'video'
+                new_file_ids = [message.video.file_id]
+                
+            elif message.animation:
+                await bot_instance.edit_message_media(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    media=InputMediaAnimation(
+                        media=message.animation.file_id,
+                        caption=new_caption
+                    )
+                )
+                new_type = 'animation'
+                new_file_ids = [message.animation.file_id]
+                
+            elif message.text:
+                if take_data['content_type'] == 'text':
+                    await bot_instance.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=msg_id,
+                        text=message.text
+                    )
+                    new_type = 'text'
+                    new_file_ids = []
+                else:
+                    await message.answer(
+                        "❌ Нельзя заменить медиа на текст.\n"
+                        "Отправьте фото/видео или удалите тейк.",
+                        reply_markup=build_cancel_keyboard()
+                    )
+                    return
+            else:
+                await message.answer(
+                    "❌ Неподдерживаемый тип контента",
+                    reply_markup=build_cancel_keyboard()
+                )
+                return
+            
+            # Обновляем в БД
+            db.supabase.table('published_takes').update({
+                'content_type': new_type,
+                'file_ids': new_file_ids,
+                'caption': new_caption,
+                'edited_at': datetime.now().isoformat()
+            }).eq('id', data['edit_take_id']).execute()
+            
+            await message.answer(
+                "✅ Тейк успешно обновлён в канале!",
+                reply_markup=build_main_menu(bot_id)
+            )
+            logger.info(f"✏️ Пользователь {message.from_user.id} отредактировал тейк {msg_id}")
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка редактирования: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            
+            await message.answer(
+                f"❌ Не удалось обновить тейк:\n{str(e)}\n\n"
+                f"Возможно:\n"
+                f"• Тейк старше 48 часов\n"
+                f"• Бот не имеет прав в канале\n"
+                f"• Сообщение было удалено",
+                reply_markup=build_main_menu(bot_id)
+            )
+        
+        await state.clear()
+
+    @router.callback_query(F.data.startswith("delete_my_take_"))
+    async def delete_my_take(callback: types.CallbackQuery):
+        """Удалить тейк из канала и БД."""
+        take_id = int(callback.data[15:])
+        
+        try:
+            take = db.supabase.table('published_takes').select('*').eq('id', take_id).execute()
+            if not take.data:
+                await callback.answer("Тейк не найден", show_alert=True)
+                return
+            
+            take_data = take.data[0]
+            cfg = config.bots.get(bot_id)
+            
+            # Удаляем из канала
+            try:
+                await bot_instance.delete_message(
+                    chat_id=take_data['chat_id'],
+                    message_id=take_data['channel_message_id']
+                )
+            except Exception as e:
+                logger.warning(f"Не удалось удалить из канала: {e}")
+            
+            # Удаляем из БД
+            db.delete_published_take(take_id)
+            
+            await callback.message.edit_text(
+                "✅ Тейк удалён из канала и базы данных",
+                reply_markup=build_main_menu(bot_id)
+            )
+            logger.info(f"🗑️ Пользователь {callback.from_user.id} удалил свой тейк {take_id}")
+            
+        except Exception as e:
+            logger.error(f"Ошибка удаления тейка: {e}")
+            await callback.answer("Ошибка удаления", show_alert=True)
+        await callback.answer()
+
     dp.include_router(router)
 
 def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
