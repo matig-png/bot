@@ -3270,7 +3270,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         try:
             cfg = config.bots.get(bot_id)
             chat_id = take_data['chat_id']
-            msg_id = take_data['channel_message_id']
+            msg_id = take_data['channel_message_ids'][0]  # Первое ID из списка
             
             # Проверяем тип
             if take_data['content_type'] == 'media_group':
