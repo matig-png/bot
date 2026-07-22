@@ -3294,36 +3294,52 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
     @router.callback_query(F.data.startswith("delete_my_take_"))
     async def delete_my_take(callback: types.CallbackQuery):
-        """Удалить тейк из канала и БД."""
+        """Удалить тейк из канала и БД (включая все медиа из альбома)."""
         take_id = int(callback.data[15:])
-        
+    
         try:
             take = db.supabase.table('published_takes').select('*').eq('id', take_id).execute()
             if not take.data:
                 await callback.answer("Тейк не найден", show_alert=True)
                 return
-            
+        
             take_data = take.data[0]
             cfg = config.bots.get(bot_id)
-            
-            # Удаляем из канала
-            try:
-                await bot_instance.delete_message(
-                    chat_id=take_data['chat_id'],
-                    message_id=take_data['channel_message_id']
-                )
-            except Exception as e:
-                logger.warning(f"Не удалось удалить из канала: {e}")
-            
+        
+            # НОВОЕ: Удаляем ВСЕ сообщения из списка
+            channel_msg_ids = take_data.get('channel_message_ids', [])
+            deleted_count = 0
+            errors = []
+        
+            for msg_id in channel_msg_ids:
+                try:
+                    await bot_instance.delete_message(
+                        chat_id=take_data['chat_id'],
+                        message_id=msg_id
+                    )
+                    deleted_count += 1
+                    logger.info(f"🗑️ Удалено сообщение {msg_id}")
+                except Exception as e:
+                    logger.warning(f"Не удалось удалить {msg_id}: {e}")
+                    errors.append(str(e))
+        
             # Удаляем из БД
             db.delete_published_take(take_id)
-            
-            await callback.message.edit_text(
-                "✅ Тейк удалён из канала и базы данных",
-                reply_markup=build_main_menu(bot_id)
-            )
+        
+            if deleted_count == len(channel_msg_ids):
+                await callback.message.edit_text(
+                    f"✅ Тейк удалён из канала ({deleted_count} сообщений)",
+                    reply_markup=build_main_menu(bot_id)
+                )
+            else:
+                await callback.message.edit_text(
+                    f"⚠️ Частично удалён: {deleted_count}/{len(channel_msg_ids)} сообщений\n"
+                    f"Ошибки: {', '.join(errors[:3])}",
+                    reply_markup=build_main_menu(bot_id)
+                )
+        
             logger.info(f"🗑️ Пользователь {callback.from_user.id} удалил свой тейк {take_id}")
-            
+        
         except Exception as e:
             logger.error(f"Ошибка удаления тейка: {e}")
             await callback.answer("Ошибка удаления", show_alert=True)
