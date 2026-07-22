@@ -2818,7 +2818,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
         @router.message(F.text.contains("#тейк") | F.caption.contains("#тейк"))
         async def auto_forward_take(message: types.Message, state: FSMContext):
-        """Автоматическая обработка одиночного тейка."""
+            """Автоматическая обработка одиночного тейка."""
             if message.chat.type in ("channel", "group", "supergroup"):
                 return
     
