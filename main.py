@@ -2598,6 +2598,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             """Общая логика обработки одиночного тейка."""
             uid = message.from_user.id
             register_user(message.from_user, bid)
+
             cfg = config.bots.get(bid)
             user_data = db.get_bot_data(uid, bid)
 
@@ -2615,20 +2616,27 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
             if cfg.takes_paused:
                 take_data = {
-                    'user_id': uid, 'bot_id': bid, 'text': text,
+                    'user_id': uid,
+                    'bot_id': bid,
+                    'text': text,
                     'photo': message.photo[-1].file_id if message.photo else None,
                     'video': message.video.file_id if message.video else None,
                     'animation': message.animation.file_id if message.animation else None,
                     'document': message.document.file_id if message.document else None,
                     'caption': message.caption,
-                    'caption_entities': serialize_entities(message.caption_entities if hasattr(message, 'caption_entities') else None),
+                    'caption_entities': serialize_entities(
+                        message.caption_entities if hasattr(message, 'caption_entities') else None
+                    ),
                     'timestamp': datetime.now().isoformat()
                 }
+
                 if bid not in config.paused_takes:
                     config.paused_takes[bid] = []
+
                 config.paused_takes[bid].append(take_data)
                 config.save()
                 db.add_take_timestamp(uid, bid)
+
                 await message.answer(
                     "⏸ Тейки сейчас на паузе. Ваш тейк будет отправлен когда тейки включат.",
                     reply_markup=build_main_menu(bid)
@@ -2651,8 +2659,11 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
             if needs_moderation:
                 take_id = str(uuid.uuid4())[:8]
+
                 config.pending_takes[take_id] = {
-                    'user_id': uid, 'bot_id': bid, 'text': text,
+                    'user_id': uid,
+                    'bot_id': bid,
+                    'text': text,
                     'photo': message.photo[-1].file_id if message.photo else None,
                     'video': message.video.file_id if message.video else None,
                     'animation': message.animation.file_id if message.animation else None,
@@ -2661,49 +2672,70 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     'audio': message.audio.file_id if message.audio else None,
                     'sticker': message.sticker.file_id if message.sticker else None,
                     'caption': message.caption,
-                    'caption_entities': serialize_entities(message.caption_entities if hasattr(message, 'caption_entities') else None)
+                    'caption_entities': serialize_entities(
+                        message.caption_entities if hasattr(message, 'caption_entities') else None
+                    )
                 }
                 config.save()
 
-                is_blocked_flag = bool(db.get_bot_data(uid, bid).get('is_blocked', False))
+                is_blocked_flag = bool(
+                    db.get_bot_data(uid, bid).get('is_blocked', False)
+                )
+
                 all_users = db.get_all_users_for_bot(bid)
+
                 for user in all_users:
                     mod_uid = user['user_id']
+
                     if check_moderator(mod_uid, bid):
                         try:
                             if is_blocked_flag:
-                                mod_kb = build_take_moderation_keyboard_blocked(take_id, uid)
+                                mod_kb = build_take_moderation_keyboard_blocked(
+                                    take_id,
+                                    uid
+                                )
                             else:
-                                mod_kb = build_take_moderation_keyboard(take_id, uid, False)
+                                mod_kb = build_take_moderation_keyboard(
+                                    take_id,
+                                    uid,
+                                    False
+                                )
+
                             await bot.send_message(
                                 mod_uid,
-                                f"⚠️ Тейк на модерации\nПричина: {moderation_reason}\n\n{text}",
+                                f"⚠️ Тейк на модерации\n"
+                                f"Причина: {moderation_reason}\n\n{text}",
                                 reply_markup=mod_kb
                             )
-                            await message.copy_to(mod_uid)
-                        except Exception as e:
-                            logger.error(f"Ошибка отправки модератору {mod_uid}: {e}")
 
-                await message.answer("📝 Тейк отправлен на модерацию.", reply_markup=build_main_menu(bid))
+                            await message.copy_to(mod_uid)
+
+                        except Exception as e:
+                            logger.error(
+                                f"Ошибка отправки модератору {mod_uid}: {e}"
+                            )
+
+                await message.answer(
+                    "📝 Тейк отправлен на модерацию.",
+                    reply_markup=build_main_menu(bid)
+                )
                 return True
+
             else:
                 sent = await forward_take_to_channel(message, bid, bot)
+
                 if sent:
+                    # Для одиночного тейка это список из одного ID.
+                    # Такой же формат используется у альбомов.
+                    channel_msg_ids = [sent.message_id]
+
+                    # Записываем использование слота тейка один раз.
                     db.add_take_timestamp(uid, bid)
-                    _, new_remaining, new_msg = can_send_take(uid, bid)
-                    await message.answer(
-                        f"✅ Тейк отправлен в канал!\n📝 {new_msg}",
-                        reply_markup=build_main_menu(bid)
-                    )
-                    
-                if sent:
-                    db.add_take_timestamp(uid, bid)
-    
-    # НОВОЕ: Сохраняем тейк для редактирования
+
                     content_type = 'text'
                     file_ids = []
-                    caption = message.text or message.caption
-    
+                    caption = message.text or message.caption or ""
+
                     if message.photo:
                         content_type = 'photo'
                         file_ids = [message.photo[-1].file_id]
@@ -2713,7 +2745,20 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     elif message.animation:
                         content_type = 'animation'
                         file_ids = [message.animation.file_id]
-    
+                    elif message.document:
+                        content_type = 'document'
+                        file_ids = [message.document.file_id]
+                    elif message.voice:
+                        content_type = 'voice'
+                        file_ids = [message.voice.file_id]
+                    elif message.audio:
+                        content_type = 'audio'
+                        file_ids = [message.audio.file_id]
+                    elif message.sticker:
+                        content_type = 'sticker'
+                        file_ids = [message.sticker.file_id]
+
+                    # Сохраняем тейк для возможности удаления/редактирования.
                     db.save_published_take(
                         user_id=uid,
                         bot_id=bid,
@@ -2723,38 +2768,58 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                         file_ids=file_ids,
                         caption=caption
                     )
-    
-                    _, new_remaining, new_msg = can_send_take(uid, bid)
-    # ... остальной код
 
-                    # НОВОЕ: Отправляем админам/модераторам с кнопкой "Удалить"
-                    channel_msg_ids = [sent.message_id]
-                    is_blocked_flag = bool(db.get_bot_data(uid, bid).get('is_blocked', False))
+                    _, new_remaining, new_msg = can_send_take(uid, bid)
+
+                    await message.answer(
+                        f"✅ Тейк отправлен в канал!\n📝 {new_msg}",
+                        reply_markup=build_main_menu(bid)
+                    )
+
+                    # Отправляем опубликованный тейк модераторам вместе с кнопкой удаления.
+                    is_blocked_flag = bool(
+                        db.get_bot_data(uid, bid).get('is_blocked', False)
+                    )
 
                     all_users = db.get_all_users_for_bot(bid)
+
                     for user in all_users:
                         mod_uid = user['user_id']
+
                         if check_moderator(mod_uid, bid):
                             try:
                                 if is_blocked_flag:
-                                    published_kb = build_published_take_keyboard_blocked(channel_msg_ids, uid)
+                                    published_kb = build_published_take_keyboard_blocked(
+                                        channel_msg_ids,
+                                        uid
+                                    )
                                 else:
-                                    published_kb = build_published_take_keyboard(channel_msg_ids, uid, False)
-                                
-                                await bot.send_message(
+                                    published_kb = build_published_take_keyboard(
+                                        channel_msg_ids,
+                                        uid,
+                                        False
+                                    )
+
+                                await message.copy_to(
                                     mod_uid,
-                                    f"📝 Тейк опубликован в канале",
                                     reply_markup=published_kb
                                 )
-                                await message.copy_to(mod_uid)
+
                             except Exception as e:
-                                logger.error(f"Ошибка отправки модератору {mod_uid}: {e}")
+                                logger.error(
+                                    f"Ошибка отправки модератору {mod_uid}: {e}"
+                                )
 
                     return True
+
                 else:
-                    await message.answer("❌ Ошибка при отправке тейка.", reply_markup=build_main_menu(bid))
+                    await message.answer(
+                        "❌ Ошибка при отправке тейка.",
+                        reply_markup=build_main_menu(bid)
+                    )
                     return False
 
+        
         @router.callback_query(F.data == "send_take")
         async def callback_send_take(callback: types.CallbackQuery, state: FSMContext):
             user_data = db.get_bot_data(callback.from_user.id, bot_id)
