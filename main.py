@@ -2516,7 +2516,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                         db.save_published_take(
                             user_id=user_id,
                             bot_id=bid,
-                            channel_msg_id=sent_messages[0].message_id,  # Первое сообщение альбома
+                            channel_msg_ids=[sent.message_id],  # Первое сообщение альбома
                             chat_id=cfg.takes_channel,
                             content_type='media_group',
                             file_ids=[msg.photo[-1].file_id if msg.photo else msg.video.file_id for msg in messages],
@@ -2717,7 +2717,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     db.save_published_take(
                         user_id=uid,
                         bot_id=bid,
-                        channel_msg_id=sent.message_id,
+                        channel_msg_ids=channel_msg_ids,
                         chat_id=cfg.takes_channel,
                         content_type=content_type,
                         file_ids=file_ids,
