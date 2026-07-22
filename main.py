@@ -3288,13 +3288,35 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             new_file_ids = []
             new_caption = message.text or message.caption or ""
             
+            # НОВОЕ: Проверяем наличие #тейк
+            if "#тейк" not in new_caption.lower():
+                await message.answer(
+                    "⚠️ Добавьте хештег #тейк в сообщение!",
+                    reply_markup=build_cancel_keyboard()
+                )
+                return
+            
+            # НОВОЕ: Добавляем автооформление для главного бота
+            if bot_id == "main" and new_caption:
+                import re as re_module
+                pattern = re_module.compile(r'(#тейк)', re_module.IGNORECASE)
+                new_caption = pattern.sub(
+                    r'\1\n★@Wings_teyk_bot ; @Wings_of_fire_CF★', 
+                    new_caption, 
+                    count=1
+                )
+            
+            # НОВОЕ: Применяем цензуру
+            censored_caption, has_profanity = censor_profanity(new_caption, bot_id)
+            
             if message.photo:
                 await bot_instance.edit_message_media(
                     chat_id=chat_id,
                     message_id=msg_id,
                     media=InputMediaPhoto(
                         media=message.photo[-1].file_id,
-                        caption=new_caption,
+                        caption=censored_caption if has_profanity else new_caption,
+                        parse_mode="HTML" if has_profanity else None,
                         has_spoiler=getattr(message, 'has_media_spoiler', False)
                     )
                 )
@@ -3307,7 +3329,8 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     message_id=msg_id,
                     media=InputMediaVideo(
                         media=message.video.file_id,
-                        caption=new_caption,
+                        caption=censored_caption if has_profanity else new_caption,
+                        parse_mode="HTML" if has_profanity else None,
                         has_spoiler=getattr(message, 'has_media_spoiler', False)
                     )
                 )
@@ -3320,7 +3343,8 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     message_id=msg_id,
                     media=InputMediaAnimation(
                         media=message.animation.file_id,
-                        caption=new_caption
+                        caption=censored_caption if has_profanity else new_caption,
+                        parse_mode="HTML" if has_profanity else None
                     )
                 )
                 new_type = 'animation'
@@ -3331,7 +3355,8 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     await bot_instance.edit_message_text(
                         chat_id=chat_id,
                         message_id=msg_id,
-                        text=message.text
+                        text=censored_caption if has_profanity else new_caption,
+                        parse_mode="HTML" if has_profanity else None
                     )
                     new_type = 'text'
                     new_file_ids = []
@@ -3349,11 +3374,11 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 )
                 return
             
-            # Обновляем в БД
+            # Обновляем в БД (сохраняем оригинальный текст без автооформления)
             db.supabase.table('published_takes').update({
                 'content_type': new_type,
                 'file_ids': new_file_ids,
-                'caption': new_caption,
+                'caption': message.text or message.caption or "",
                 'edited_at': datetime.now().isoformat()
             }).eq('id', data['edit_take_id']).execute()
             
