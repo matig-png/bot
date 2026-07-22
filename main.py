@@ -2777,6 +2777,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     )
 
                     # Отправляем опубликованный тейк модераторам вместе с кнопкой удаления.
+                    # Отправляем опубликованный тейк модераторам и отдельные кнопки.
                     is_blocked_flag = bool(
                         db.get_bot_data(uid, bid).get('is_blocked', False)
                     )
@@ -2786,29 +2787,42 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     for user in all_users:
                         mod_uid = user['user_id']
 
-                        if check_moderator(mod_uid, bid):
-                            try:
-                                if is_blocked_flag:
-                                    published_kb = build_published_take_keyboard_blocked(
-                                        channel_msg_ids,
-                                        uid
-                                    )
-                                else:
-                                    published_kb = build_published_take_keyboard(
-                                        channel_msg_ids,
-                                        uid,
-                                        False
-                                    )
+                        if not check_moderator(mod_uid, bid):
+                            continue
 
-                                await message.copy_to(
-                                    mod_uid,
-                                    reply_markup=published_kb
+                        try:
+                            # 1. Копируем уже опубликованную версию из канала.
+                            # Так модератор видит цензуру и автооформление.
+                            await bot.copy_message(
+                                chat_id=mod_uid,
+                                from_chat_id=cfg.takes_channel,
+                                message_id=sent.message_id
+                            )
+
+                            # 2. Отдельное сообщение с кнопками управления.
+                            if is_blocked_flag:
+                                published_kb = build_published_take_keyboard_blocked(
+                                    channel_msg_ids,
+                                    uid
+                                )
+                            else:
+                                published_kb = build_published_take_keyboard(
+                                    channel_msg_ids,
+                                    uid,
+                                    False
                                 )
 
-                            except Exception as e:
-                                logger.error(
-                                    f"Ошибка отправки модератору {mod_uid}: {e}"
-                                )
+                            await bot.send_message(
+                                chat_id=mod_uid,
+                                text="📝 Тейк опубликован в канале",
+                                reply_markup=published_kb
+                            )
+
+                        except Exception as e:
+                            logger.error(
+                                f"Ошибка отправки опубликованного тейка "
+                                f"модератору {mod_uid}: {e}"
+                            )
 
                     return True
 
