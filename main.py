@@ -3086,25 +3086,25 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     async def show_take_options(callback: types.CallbackQuery):
         """Показать опции для тейка (редактировать/удалить)."""
         take_id = int(callback.data[10:])
-        
+    
         try:
             take = db.supabase.table('published_takes').select('*').eq('id', take_id).execute()
             if not take.data:
                 await callback.answer("Тейк не найден", show_alert=True)
                 return
-            
+        
             take_data = take.data[0]
-            
+        
             # Проверяем срок
             published = datetime.fromisoformat(take_data['published_at'])
             hours_ago = (datetime.now() - published).total_seconds() / 3600
-            
+        
             if hours_ago > 24:
                 await callback.answer("⏰ Срок редактирования истёк (24 часа)", show_alert=True)
                 return
-            
+        
             builder = InlineKeyboardBuilder()
-            
+        
             # Кнопка редактирования (только для НЕ медиагрупп)
             if take_data['content_type'] != 'media_group':
                 builder.row(InlineKeyboardButton(
@@ -3116,19 +3116,27 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     text="⚠️ Альбомы нельзя редактировать",
                     callback_data="noop"
                 ))
-            
+        
+            # НОВОЕ: Показываем количество медиа для альбомов
+            msg_count = len(take_data.get('channel_message_ids', []))
+            delete_text = f"🗑 Удалить из канала ({msg_count} медиа)" if msg_count > 1 else "🗑 Удалить из канала"
+        
             builder.row(InlineKeyboardButton(
-                text="🗑 Удалить из канала",
+                text=delete_text,
                 callback_data=f"delete_my_take_{take_id}"
             ))
             builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="my_takes"))
             
             caption_text = take_data.get('caption', 'Без текста')[:100]
+            type_text = "Альбом" if take_data['content_type'] == 'media_group' else "Одиночный"
+        
             await callback.message.edit_text(
-                f"📝 Тейк:\n{caption_text}\n\n⏰ Опубликован {int(hours_ago)}ч назад",
+                f"📝 Тейк ({type_text}):\n{caption_text}\n\n"
+                f"⏰ Опубликован {int(hours_ago)}ч назад\n"
+                f"📊 Медиа: {msg_count}",
                 reply_markup=builder.as_markup()
             )
-            
+        
         except Exception as e:
             logger.error(f"Ошибка показа опций тейка: {e}")
             await callback.answer("Ошибка", show_alert=True)
