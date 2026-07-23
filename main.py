@@ -3268,6 +3268,10 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     @router.message(TakeStates.WaitingEdit)
     async def process_edit_take(message: types.Message, state: FSMContext):
         """Обработка нового варианта тейка."""
+        logger.info(f"✏️ РЕДАКТИРОВАНИЕ началось для пользователя {message.from_user.id}")
+        logger.info(f"📝 Текст сообщения: {(message.text or message.caption or '')[:100]}")
+        
+        """Обработка нового варианта тейка."""
         data = await state.get_data()
         take_data = data['take_data']
         
