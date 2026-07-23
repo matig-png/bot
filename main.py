@@ -2907,11 +2907,14 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     
             # НОВОЕ: Пропускаем если идёт редактирование
             current_state = await state.get_state()
-            if current_state == TakeStates.WaitingEdit:
+
+# Сравниваем со строкой состояния
+            if current_state == TakeStates.WaitingEdit.state:
+                logger.info(f"✅ AUTO-TAKE пропущен — идёт редактирование")
                 return
-    
-            # НОВОЕ: Пропускаем если ожидаем тейк через кнопку
-            if current_state == TakeStates.WaitingTake:
+
+            if current_state == TakeStates.WaitingTake.state:
+                logger.info(f"✅ AUTO-TAKE пропущен — ожидание тейка через кнопку")
                 return
     
             await process_take_message(message, bot_id, bot_instance)
