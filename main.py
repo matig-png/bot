@@ -2895,29 +2895,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             if "#тейк" in text.lower() or group_id in media_group_buffer:
                 await handle_take_media_group(message, bot_id, bot_instance, state)
 
-        @router.message(F.text.contains("#тейк") | F.caption.contains("#тейк"))
-        async def auto_forward_take(message: types.Message, state: FSMContext):
-            """Автоматическая обработка одиночного тейка."""
-            if message.chat.type in ("channel", "group", "supergroup"):
-                return
 
-             # НОВОЕ: Логирование
-            current_state = await state.get_state()
-            logger.info(f"🔍 AUTO-TAKE вызван. Текущее состояние: {current_state}")
-    
-            # НОВОЕ: Пропускаем если идёт редактирование
-            current_state = await state.get_state()
-
-# Сравниваем со строкой состояния
-            if current_state == TakeStates.WaitingEdit.state:
-                logger.info(f"✅ AUTO-TAKE пропущен — идёт редактирование")
-                return
-
-            if current_state == TakeStates.WaitingTake.state:
-                logger.info(f"✅ AUTO-TAKE пропущен — ожидание тейка через кнопку")
-                return
-    
-            await process_take_message(message, bot_id, bot_instance)
 
     
         @router.callback_query(F.data.startswith("take_approve_"))
