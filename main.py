@@ -2900,6 +2900,10 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             """Автоматическая обработка одиночного тейка."""
             if message.chat.type in ("channel", "group", "supergroup"):
                 return
+
+             # НОВОЕ: Логирование
+            current_state = await state.get_state()
+            logger.info(f"🔍 AUTO-TAKE вызван. Текущее состояние: {current_state}")
     
             # НОВОЕ: Пропускаем если идёт редактирование
             current_state = await state.get_state()
