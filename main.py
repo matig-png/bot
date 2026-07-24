@@ -2895,7 +2895,21 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             if "#тейк" in text.lower() or group_id in media_group_buffer:
                 await handle_take_media_group(message, bot_id, bot_instance, state)
 
+        # =================== АВТОМАТИЧЕСКИЙ ПЕРЕХВАТ ТЕЙКОВ ===================
+        # Этот хэндлер ловит сообщения с хэштегом, если пользователь просто пишет в бота
+        @router.message(
+            (F.text.contains("#тейк") | F.caption.contains("#тейк")), 
+            StateFilter(None) # <--- ВАЖНО: срабатывает только если пользователь не в режиме правки
+        )
+        async def auto_forward_take(message: types.Message, state: FSMContext):
+            """Автоматическая обработка одиночного сообщения с хэштегом."""
+            if message.chat.type in ("channel", "group", "supergroup"):
+                return
+                
+            # Просто вызываем вашу функцию обработки
+            await process_take_message(message, bot_id, bot_instance)
 
+        # ======================================================================
 
     
         @router.callback_query(F.data.startswith("take_approve_"))
