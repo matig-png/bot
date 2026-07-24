@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field, asdict
 
 from aiogram import Bot, Dispatcher, types, F, Router
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
