@@ -4716,6 +4716,7 @@ async def main():
         from main import BotConfig # убедись что импорт корректен
         config.bots["sparks"] = BotConfig(
             bot_id="sparks",
+            token=
             currency_name="искры",
             currency_emoji="✨",
             base_exchange_rate=0.5, # 1 луна = 2 искры, значит искра = 0.5 луны
