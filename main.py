@@ -4711,6 +4711,20 @@ async def main():
     logger.info("Загрузка конфигурации...")
     config.load()
 
+    # Добавляем в основной бот знание о боте Искр
+    if "sparks" not in config.bots:
+        from main import BotConfig # убедись что импорт корректен
+        config.bots["sparks"] = BotConfig(
+            bot_id="sparks",
+            currency_name="искры",
+            currency_emoji="✨",
+            base_exchange_rate=0.5, # 1 луна = 2 искры, значит искра = 0.5 луны
+            modules=["economy"] 
+        )
+        config.exchange_rates.rates["sparks"] = 0.5
+        config.save()
+        logger.info("✅ Бот Искр интегрирован в систему основного бота")
+
     asyncio.create_task(background_cleanup_task())
 
     main_cfg = config.bots.get("main")
