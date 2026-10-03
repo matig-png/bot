@@ -1315,50 +1315,55 @@ def build_quiz_keyboard(question_num: int) -> InlineKeyboardMarkup:
 
 async def forward_take_to_channel(message: types.Message, bot_id: str, bot_instance: Bot) -> Optional[types.Message]:
     """
-    Пересылает тейк в канал с поддержкой Премиум-эмодзи.
-    Использует HTML-разметку, чтобы подпись и цензура не ломали кастомные эмодзи.
+    Пересылает тейк в канал с полной поддержкой Премиум-эмодзи.
     """
     try:
         bot_cfg = config.bots.get(bot_id)
         if not bot_cfg or not bot_cfg.takes_channel:
             return None
 
-        # 1. Получаем исходный HTML (со всеми премиум-эмодзи в виде тегов <tg-custom-emoji>)
-        # Это самый надежный способ сохранить анимированные эмодзи при изменении текста.
-        content_html = message.html_text if message.text else (message.caption_html or "")
-
-        # 2. Проверка на мат (проводим на «чистом» тексте без тегов)
-        raw_text = message.text or message.caption or ""
-        censored_text, has_profanity = censor_profanity(raw_text, bot_id)
-
-        # 3. Формируем итоговый текст для отправки
-        if has_profanity:
-            # Если есть мат — используем текст со спойлерами из функции цензуры.
-            # ВНИМАНИЕ: В матерных тейках премиум-эмодзи могут стать обычными.
-            final_text = censored_text
+        # 1. СРАЗУ получаем контент в формате HTML.
+        # Это превращает все премиум-эмодзи в теги <tg-custom-emoji>, которые не ломаются.
+        if message.text:
+            content_html = message.html_text
         else:
-            # Если мата нет — используем оригинальный HTML-текст. Эмодзи сохранятся.
-            final_text = content_html
+            content_html = message.caption_html or ""
 
-        # 4. Добавляем подпись для главного бота прямо в HTML строку
+        # 2. Обработка подписи для главного бота (делаем прямо в HTML)
         if bot_id == "main":
             import re as re_module
-            # Ищем #тейк (любого регистра) и добавляем подпись сразу после него
             pattern = re_module.compile(r'(#тейк)', re_module.IGNORECASE)
-            if pattern.search(final_text):
+            if pattern.search(content_html):
                 signature = '\n★@Wings_teyk_bot ; @Wings_of_fire_CF★'
-                final_text = pattern.sub(r'\1' + signature, final_text, count=1)
+                # Вставляем подпись после первого найденного #тейк
+                content_html = pattern.sub(r'\1' + signature, content_html, count=1)
 
-        # 5. Подготовка параметров отправки
+        # 3. Цензура
+        # Проверяем наличие мата в "чистом" тексте (без тегов), 
+        # чтобы не искать мат внутри ID эмодзи.
+        raw_text = message.text or message.caption or ""
+        censored_raw, has_profanity = censor_profanity(raw_text, bot_id)
+
+        if has_profanity:
+            # Если мат есть, используем текст со спойлерами.
+            # ПРИМЕЧАНИЕ: В матерных тейках премиум-эмодзи станут обычными, 
+            # так как разметка спойлеров создается из сырого текста.
+            final_content = censored_raw
+            # Добавляем подпись к цензурированному тексту, если это мейн бот
+            if bot_id == "main" and "#тейк" in final_content:
+                 final_content = final_content.replace("#тейк", "#тейк\n★@Wings_teyk_bot ; @Wings_of_fire_CF★", 1)
+        else:
+            # Если мата нет — используем наш идеальный content_html.
+            final_content = content_html
+
+        # 4. Подготовка общих параметров
         has_media_spoiler = getattr(message, 'has_media_spoiler', False)
-        
-        # Мы всегда используем HTML, поэтому entities больше не передаем
         send_kwargs = {
-            "caption": final_text,
+            "caption": final_content,
             "parse_mode": "HTML"
         }
 
-        # 6. Отправка в зависимости от типа сообщения
+        # 5. Отправка (Важно: entities НЕ передаем вообще!)
         if message.photo:
             return await bot_instance.send_photo(
                 bot_cfg.takes_channel,
@@ -1381,7 +1386,6 @@ async def forward_take_to_channel(message: types.Message, bot_id: str, bot_insta
                 **send_kwargs
             )
         elif message.document:
-            # У документа нет параметра has_spoiler в методе send_document
             return await bot_instance.send_document(
                 bot_cfg.takes_channel,
                 document=message.document.file_id,
@@ -1405,12 +1409,12 @@ async def forward_take_to_channel(message: types.Message, bot_id: str, bot_insta
                 sticker=message.sticker.file_id
             )
         else:
-            # Просто текстовое сообщение
-            # Убираем caption, заменяем на text
-            send_kwargs['text'] = send_kwargs.pop('caption')
+            # ДЛЯ ОБЫЧНОГО ТЕКСТА
+            # Убираем caption из параметров, так как для текста используется аргумент text
             return await bot_instance.send_message(
                 bot_cfg.takes_channel,
-                **send_kwargs
+                text=final_content,
+                parse_mode="HTML"
             )
 
     except Exception as e:
