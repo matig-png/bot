@@ -1315,56 +1315,87 @@ def build_quiz_keyboard(question_num: int) -> InlineKeyboardMarkup:
 
 async def forward_take_to_channel(message: types.Message, bot_id: str, bot_instance: Bot) -> Optional[types.Message]:
     """
-    Пересылает тейк в канал, гарантированно сохраняя Премиум-эмодзи через метод копирования.
+    Пересылает тейк в канал с цензурой мата.
+    Сохраняет спойлеры на медиа и всё форматирование текста.
+    Для главного бота добавляет подпись после #тейк.
     """
     try:
         bot_cfg = config.bots.get(bot_id)
         if not bot_cfg or not bot_cfg.takes_channel:
             return None
 
-        # 1. Подготовка текста (HTML) для подписи
-        # Мы используем html_text, чтобы сохранить теги премиум-эмодзи внутри строки
-        content_html = message.html_text if message.text else (message.caption_html or "")
+        text = message.text or message.caption or ""
+        entities = message.entities or message.caption_entities
 
-        # 2. Добавляем подпись для главного бота (только если нет мата)
-        raw_text = message.text or message.caption or ""
-        censored_raw, has_profanity = censor_profanity(raw_text, bot_id)
-
+        # Для главного бота добавляем подпись после #тейк
         if bot_id == "main":
             import re as re_module
             pattern = re_module.compile(r'(#тейк)', re_module.IGNORECASE)
-            
-            if has_profanity:
-                # Если мат есть, используем текст со спойлерами (эмодзи могут пропасть)
-                final_text = censored_raw
-                if pattern.search(final_text):
-                    final_text = pattern.sub(r'\1\n★@Wings_teyk_bot ; @Wings_of_fire_CF★', final_text, count=1)
-            else:
-                # Если мата НЕТ, работаем с HTML-оригиналом (эмодзи сохранятся!)
-                if pattern.search(content_html):
-                    signature = '\n★@Wings_teyk_bot ; @Wings_of_fire_CF★'
-                    final_text = pattern.sub(r'\1' + signature, content_html, count=1)
-                else:
-                    final_text = content_html
-        else:
-            final_text = censored_raw if has_profanity else content_html
+            if pattern.search(text):
+                text = pattern.sub(r'\1\n★@Wings_teyk_bot ; @Wings_of_fire_CF★', text, count=1)
 
-        # 3. КРИТИЧЕСКИЙ МОМЕНТ: Используем метод copy_to
-        # Мы передаем новый caption/text в формате HTML.
-        # Если Telegram-бот является администратором, он сможет отправить премиум-эмодзи из HTML-тегов.
-        
-        copy_kwargs = {
-            "chat_id": bot_cfg.takes_channel,
-            "caption" if not message.text else "text": final_text,
-            "parse_mode": "HTML"
+        censored, has_profanity = censor_profanity(text, bot_id)
+
+        # Проверяем наличие спойлера на медиа
+        has_media_spoiler = getattr(message, 'has_media_spoiler', False)
+
+        send_kwargs = {
+            "caption": censored if has_profanity else text,
+            "parse_mode": "HTML" if has_profanity else None,
+            "caption_entities": entities if not has_profanity else None
         }
 
-        # Для медиа (фото, видео и т.д.) добавляем спойлер, если он был
-        if not message.text:
-            copy_kwargs["has_media_spoiler"] = getattr(message, 'has_media_spoiler', False)
-
-        return await message.copy_to(**copy_kwargs)
-
+        if message.photo:
+            return await bot_instance.send_photo(
+                bot_cfg.takes_channel,
+                photo=message.photo[-1].file_id,
+                has_spoiler=has_media_spoiler,
+                **send_kwargs
+            )
+        elif message.video:
+            return await bot_instance.send_video(
+                bot_cfg.takes_channel,
+                video=message.video.file_id,
+                has_spoiler=has_media_spoiler,
+                **send_kwargs
+            )
+        elif message.animation:
+            return await bot_instance.send_animation(
+                bot_cfg.takes_channel,
+                animation=message.animation.file_id,
+                has_spoiler=has_media_spoiler,
+                **send_kwargs
+            )
+        elif message.document:
+            return await bot_instance.send_document(
+                bot_cfg.takes_channel,
+                document=message.document.file_id,
+                **send_kwargs
+            )
+        elif message.voice:
+            return await bot_instance.send_voice(
+                bot_cfg.takes_channel,
+                voice=message.voice.file_id,
+                **send_kwargs
+            )
+        elif message.audio:
+            return await bot_instance.send_audio(
+                bot_cfg.takes_channel,
+                audio=message.audio.file_id,
+                **send_kwargs
+            )
+        elif message.sticker:
+            return await bot_instance.send_sticker(
+                bot_cfg.takes_channel,
+                sticker=message.sticker.file_id
+            )
+        else:
+            return await bot_instance.send_message(
+                bot_cfg.takes_channel,
+                censored if has_profanity else text,
+                parse_mode="HTML" if has_profanity else None,
+                entities=entities if not has_profanity else None
+            )
     except Exception as e:
         logger.error(f"Ошибка пересылки тейка: {e}")
         return None
