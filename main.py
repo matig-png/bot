@@ -1321,34 +1321,55 @@ def build_quiz_keyboard(question_num: int) -> InlineKeyboardMarkup:
 # ====================== НОВОЕ: ОБРАБОТКА МЕДИАГРУПП ======================
 
 async def forward_take_to_channel(message: types.Message, bot_id: str, bot_instance: Bot) -> Optional[types.Message]:
+    """
+    Пересылает тейк в канал с поддержкой Премиум-эмодзи.
+    Использует HTML-разметку, чтобы подпись не ломала кастомные эмодзи.
+    """
     try:
         bot_cfg = config.bots.get(bot_id)
         if not bot_cfg or not bot_cfg.takes_channel:
             return None
 
-        # Сохраняем форматирование через HTML, если мата нет - используем сущности
-        text = message.text or message.caption or ""
-        entities = message.entities or message.caption_entities
+        # 1. Получаем текст сообщения СРАЗУ в формате HTML.
+        # Это превращает премиум-эмодзи в теги <tg-custom-emoji>, которые не ломаются.
+        content_html = message.html_text if message.text else (message.caption_html or "")
 
-        # Логика подписи для главного бота
+        # 2. Добавляем подпись для главного бота прямо в HTML строку.
         if bot_id == "main":
-            pattern = re.compile(r'(#тейк)', re.IGNORECASE)
-            if pattern.search(text):
-                text = pattern.sub(r'\1\n★@Wings_teyk_bot ; @Wings_of_fire_CF★', text, count=1)
+            import re as re_module
+            # Ищем #тейк в HTML-тексте
+            pattern = re_module.compile(r'(#тейк)', re_module.IGNORECASE)
+            if pattern.search(content_html):
+                # Вставляем подпись. Теги эмодзи при этом не пострадают.
+                content_html = pattern.sub(r'\1\n★@Wings_teyk_bot ; @Wings_of_fire_CF★', content_html, count=1)
 
-        censored, has_profanity = censor_profanity(text, bot_id)
+        # 3. Обработка цензуры.
+        # ВНИМАНИЕ: Чтобы сохранить эмодзи, мы проверяем на мат "чистый" текст,
+        # но если мата НЕТ, отправляем content_html.
+        raw_text = message.text or message.caption or ""
+        censored_text, has_profanity = censor_profanity(raw_text, bot_id)
+
+        if has_profanity:
+            # Если в тексте есть мат, приходится использовать текст из censor_profanity.
+            # (ВАЖНО: в матерных тейках премиум-эмодзи могут превратиться в обычные, 
+            # так как функция цензуры работает с простым текстом).
+            final_text = censored_text
+            # Добавляем подпись к цензурированному тексту
+            if bot_id == "main":
+                final_text = final_text.replace("#тейк", "#тейк\n★@Wings_teyk_bot ; @Wings_of_fire_CF★", 1)
+        else:
+            # Если мата нет — отправляем content_html, где эмодзи гарантированно выживут.
+            final_text = content_html
+
         has_media_spoiler = getattr(message, 'has_media_spoiler', False)
 
-        # ПОДГОТОВКА ПАРАМЕТРОВ ОТПРАВКИ
-        # Если была цензура, мы отправляем HTML (но премиум эмодзи могут пострадать)
-        # Если цензуры нет, отправляем оригинальные сущности (эмодзи будут работать 100%)
+        # Параметры отправки (entities больше не нужны, так как используем HTML)
         send_kwargs = {
-            "caption": censored if has_profanity else text,
-            "parse_mode": "HTML" if has_profanity else None,
-            "caption_entities": None if has_profanity else entities,
+            "caption": final_text,
+            "parse_mode": "HTML",
             "has_spoiler": has_media_spoiler
         }
-
+        
         if message.photo:
             return await bot_instance.send_photo(
                 bot_cfg.takes_channel,
