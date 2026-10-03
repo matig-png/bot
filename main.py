@@ -967,17 +967,20 @@ def reset_all_rates():
 
 
 def serialize_entities(entities) -> Optional[List[Dict]]:
-    """Сериализация entities для сохранения."""
+    """Сериализация entities для сохранения (с поддержкой премиум эмодзи)."""
     if not entities:
         return None
     return [
         {
-            'type': e.type, 'offset': e.offset, 'length': e.length,
-            'url': e.url, 'language': e.language, 'custom_emoji_id': e.custom_emoji_id
+            'type': e.type, 
+            'offset': e.offset, 
+            'length': e.length,
+            'url': e.url, 
+            'language': e.language, 
+            'custom_emoji_id': getattr(e, 'custom_emoji_id', None)  # ВАЖНО: сохраняем ID
         }
         for e in entities
     ]
-
 
 def restore_entities(data: Optional[List[Dict]]) -> Optional[List[MessageEntity]]:
     """Восстановление entities из сохранённых данных."""
@@ -985,14 +988,17 @@ def restore_entities(data: Optional[List[Dict]]) -> Optional[List[MessageEntity]
         return None
     result = [
         MessageEntity(
-            type=e['type'], offset=e['offset'], length=e['length'],
-            url=e.get('url'), language=e.get('language'),
-            custom_emoji_id=e.get('custom_emoji_id')
+            type=e['type'], 
+            offset=e['offset'], 
+            length=e['length'],
+            url=e.get('url'), 
+            language=e.get('language'),
+            custom_emoji_id=e.get('custom_emoji_id')  # ВАЖНО: восстанавливаем ID
         )
         for e in data
     ]
     return result if result else None
-
+    
 
 def get_user_display_name(user_id: int) -> str:
     """Получить отображаемое имя пользователя (username в приоритете)."""
