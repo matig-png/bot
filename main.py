@@ -1315,106 +1315,90 @@ def build_quiz_keyboard(question_num: int) -> InlineKeyboardMarkup:
 
 async def forward_take_to_channel(message: types.Message, bot_id: str, bot_instance: Bot) -> Optional[types.Message]:
     """
-    Пересылает тейк в канал с полной поддержкой Премиум-эмодзи.
+    Пересылает тейк в канал с поддержкой Премиум-эмодзи.
     """
     try:
         bot_cfg = config.bots.get(bot_id)
         if not bot_cfg or not bot_cfg.takes_channel:
             return None
 
-        # 1. СРАЗУ получаем контент в формате HTML.
-        # Это превращает все премиум-эмодзи в теги <tg-custom-emoji>, которые не ломаются.
+        # 1. СРАЗУ получаем сообщение в формате HTML.
+        # Это критически важно: здесь премиум-эмодзи превращаются в 
+        # <tg-custom-emoji custom_emoji_id="123">...</tg-custom-emoji>
         if message.text:
             content_html = message.html_text
         else:
             content_html = message.caption_html or ""
 
-        # 2. Обработка подписи для главного бота (делаем прямо в HTML)
+        # 2. Добавляем подпись для главного бота прямо в HTML
         if bot_id == "main":
             import re as re_module
+            # Ищем #тейк с учетом регистра
             pattern = re_module.compile(r'(#тейк)', re_module.IGNORECASE)
             if pattern.search(content_html):
                 signature = '\n★@Wings_teyk_bot ; @Wings_of_fire_CF★'
-                # Вставляем подпись после первого найденного #тейк
+                # Вставляем подпись СРАЗУ после тега #тейк (который в HTML может быть <b>#тейк</b>)
                 content_html = pattern.sub(r'\1' + signature, content_html, count=1)
 
         # 3. Цензура
-        # Проверяем наличие мата в "чистом" тексте (без тегов), 
-        # чтобы не искать мат внутри ID эмодзи.
+        # Проверяем только "чистый" текст на наличие мата
         raw_text = message.text or message.caption or ""
         censored_raw, has_profanity = censor_profanity(raw_text, bot_id)
 
         if has_profanity:
-            # Если мат есть, используем текст со спойлерами.
-            # ПРИМЕЧАНИЕ: В матерных тейках премиум-эмодзи станут обычными, 
-            # так как разметка спойлеров создается из сырого текста.
+            # Если мат найден, используем текст со спойлерами.
+            # (Премиум-эмодзи здесь станут обычными, так как цензура работает с сырым текстом)
             final_content = censored_raw
-            # Добавляем подпись к цензурированному тексту, если это мейн бот
             if bot_id == "main" and "#тейк" in final_content:
                  final_content = final_content.replace("#тейк", "#тейк\n★@Wings_teyk_bot ; @Wings_of_fire_CF★", 1)
         else:
-            # Если мата нет — используем наш идеальный content_html.
+            # Если мата нет — используем наш content_html.
+            # Это сохранит 100% анимированных эмодзи.
             final_content = content_html
 
-        # 4. Подготовка общих параметров
+        # 4. Параметры отправки (entities = None, так как parse_mode = HTML)
         has_media_spoiler = getattr(message, 'has_media_spoiler', False)
         send_kwargs = {
             "caption": final_content,
             "parse_mode": "HTML"
         }
 
-        # 5. Отправка (Важно: entities НЕ передаем вообще!)
+        # 5. Отправка медиа или текста
         if message.photo:
             return await bot_instance.send_photo(
-                bot_cfg.takes_channel,
-                photo=message.photo[-1].file_id,
-                has_spoiler=has_media_spoiler,
-                **send_kwargs
+                bot_cfg.takes_channel, photo=message.photo[-1].file_id, 
+                has_spoiler=has_media_spoiler, **send_kwargs
             )
         elif message.video:
             return await bot_instance.send_video(
-                bot_cfg.takes_channel,
-                video=message.video.file_id,
-                has_spoiler=has_media_spoiler,
-                **send_kwargs
+                bot_cfg.takes_channel, video=message.video.file_id, 
+                has_spoiler=has_media_spoiler, **send_kwargs
             )
         elif message.animation:
             return await bot_instance.send_animation(
-                bot_cfg.takes_channel,
-                animation=message.animation.file_id,
-                has_spoiler=has_media_spoiler,
-                **send_kwargs
+                bot_cfg.takes_channel, animation=message.animation.file_id, 
+                has_spoiler=has_media_spoiler, **send_kwargs
             )
         elif message.document:
             return await bot_instance.send_document(
-                bot_cfg.takes_channel,
-                document=message.document.file_id,
-                **send_kwargs
+                bot_cfg.takes_channel, document=message.document.file_id, **send_kwargs
             )
         elif message.voice:
             return await bot_instance.send_voice(
-                bot_cfg.takes_channel,
-                voice=message.voice.file_id,
-                **send_kwargs
+                bot_cfg.takes_channel, voice=message.voice.file_id, **send_kwargs
             )
         elif message.audio:
             return await bot_instance.send_audio(
-                bot_cfg.takes_channel,
-                audio=message.audio.file_id,
-                **send_kwargs
+                bot_cfg.takes_channel, audio=message.audio.file_id, **send_kwargs
             )
         elif message.sticker:
             return await bot_instance.send_sticker(
-                bot_cfg.takes_channel,
-                sticker=message.sticker.file_id
+                bot_cfg.takes_channel, sticker=message.sticker.file_id
             )
         else:
-            # ДЛЯ ОБЫЧНОГО ТЕКСТА
-            # Убираем caption из параметров, так как для текста используется аргумент text
+            # Просто текстовое сообщение
             return await bot_instance.send_message(
-                bot_cfg.takes_channel,
-                text=final_content,
-                parse_mode="HTML"
+                bot_cfg.takes_channel, text=final_content, parse_mode="HTML"
             )
 
     except Exception as e:
