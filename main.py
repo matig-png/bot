@@ -2917,94 +2917,113 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     
         @router.callback_query(F.data.startswith("take_approve_"))
         async def take_approve(callback: types.CallbackQuery):
+            """Одобрение тейка модератором (Премиум-эмодзи + Кнопки удаления + Фикс лимитов)."""
             take_id = callback.data[13:]
             take_data = config.pending_takes.get(take_id)
             if not take_data:
-                await callback.answer("Тейк не найден", show_alert=True)
+                await callback.answer("Тейк не найден (возможно, уже одобрен).", show_alert=True)
                 return
+
             cfg = config.bots.get(take_data['bot_id'])
+            bot_id = take_data['bot_id']
+            user_id = take_data['user_id']
+
             try:
-                # Проверяем тип тейка
+                # Вспомогательная функция для текста
+                def get_processed_text(input_text: str) -> Tuple[str, bool]:
+                    if not input_text: return "", False
+                    if bot_id == "main" and "#тейк" in input_text.lower():
+                        import re as re_module
+                        pattern = re_module.compile(r'(#тейк)', re_module.IGNORECASE)
+                        input_text = pattern.sub(r'\1\n★@Wings_teyk_bot ; @Wings_of_fire_CF★', input_text, count=1)
+                    censored, has_prof = censor_profanity(input_text, bot_id)
+                    return censored, has_prof
+
+                # --- ЛОГИКА ДЛЯ АЛЬБОМОВ ---
                 if take_data.get('type') == 'take_media_group':
-                    # Это медиагруппа
                     from aiogram.types import InputMediaPhoto, InputMediaVideo
-                    
                     media_group = []
-                    for idx, media_info in enumerate(take_data['media_group']):
-                        text = media_info.get('caption', '') if idx == 0 else ""
-                        entities = restore_entities(media_info.get('caption_entities')) if idx == 0 else None
-                        
-                        # Для главного бота добавляем подпись
-                        if take_data['bot_id'] == "main" and idx == 0 and text:
-                            import re as re_module
-                            pattern = re_module.compile(r'(#тейк)', re_module.IGNORECASE)
-                            if pattern.search(text):
-                                text = pattern.sub(r'\1\n★@Wings_teyk_bot ; @Wings_of_fire_CF★', text, count=1)
-                        
-                        censored, has_prof = censor_profanity(text, take_data['bot_id'])
-                        has_spoiler = media_info.get('has_spoiler', False)
-                        
-                        if media_info.get('photo'):
+                    for idx, m_info in enumerate(take_data['media_group']):
+                        raw_cap = m_info.get('caption', '') if idx == 0 else ""
+                        entities = restore_entities(m_info.get('caption_entities')) if idx == 0 else None
+                        proc_cap, has_prof = get_processed_text(raw_cap)
+                        has_spoiler = m_info.get('has_spoiler', False)
+
+                        if m_info.get('photo'):
                             media_group.append(InputMediaPhoto(
-                                media=media_info['photo'],
-                                caption=censored if (idx == 0 and has_prof) else (text if idx == 0 else ""),
-                                parse_mode="HTML" if (idx == 0 and has_prof) else None,
-                                caption_entities=entities if (idx == 0 and not has_prof) else None,
+                                media=m_info['photo'],
+                                caption=proc_cap if has_prof else raw_cap,
+                                parse_mode="HTML" if has_prof else None,
+                                caption_entities=None if has_prof else entities,
                                 has_spoiler=has_spoiler
                             ))
-                        elif media_info.get('video'):
+                        elif m_info.get('video'):
                             media_group.append(InputMediaVideo(
-                                media=media_info['video'],
-                                caption=censored if (idx == 0 and has_prof) else (text if idx == 0 else ""),
-                                parse_mode="HTML" if (idx == 0 and has_prof) else None,
-                                caption_entities=entities if (idx == 0 and not has_prof) else None,
+                                media=m_info['video'],
+                                caption=proc_cap if has_prof else raw_cap,
+                                parse_mode="HTML" if has_prof else None,
+                                caption_entities=None if has_prof else entities,
                                 has_spoiler=has_spoiler
                             ))
                     
-                    await bot_instance.send_media_group(cfg.takes_channel, media_group)
-                    logger.info(f"Тейк-альбом одобрен: {len(media_group)} медиа")
+                    sent_msgs = await bot_instance.send_media_group(cfg.takes_channel, media_group)
+                    msg_ids_str = ",".join([str(m.message_id) for m in sent_msgs])
+                    
+                    # Кнопки для модератора
+                    is_blocked_flag = bool(db.get_bot_data(user_id, bot_id).get('is_blocked', False))
+                    pub_kb = build_published_take_keyboard(msg_ids_str, user_id, is_blocked_flag)
+                    await callback.message.edit_text("✅ Альбом опубликован.", reply_markup=pub_kb)
+
+                # --- ЛОГИКА ДЛЯ ОДИНОЧНЫХ ---
                 else:
-                    # Одиночный тейк
-                    text = take_data.get('caption') or take_data.get('text', '')
+                    raw_text = take_data.get('caption') or take_data.get('text', '')
                     entities = restore_entities(take_data.get('caption_entities'))
-                    censored, has_profanity = censor_profanity(text, bot_id)
+                    proc_text, has_prof = get_processed_text(raw_text)
+
                     send_kwargs = {
-                        "caption": censored if has_profanity else text,
-                        "parse_mode": "HTML" if has_profanity else None,
-                        "caption_entities": entities if not has_profanity else None
+                        "caption": proc_text if has_prof else raw_text,
+                        "parse_mode": "HTML" if has_prof else None,
+                        "caption_entities": None if has_prof else entities
                     }
+
+                    sent = None
                     if take_data.get('photo'):
-                        await bot_instance.send_photo(cfg.takes_channel, photo=take_data['photo'], **send_kwargs)
+                        sent = await bot_instance.send_photo(cfg.takes_channel, photo=take_data['photo'], **send_kwargs)
                     elif take_data.get('video'):
-                        await bot_instance.send_video(cfg.takes_channel, video=take_data['video'], **send_kwargs)
+                        sent = await bot_instance.send_video(cfg.takes_channel, video=take_data['video'], **send_kwargs)
                     elif take_data.get('animation'):
-                        await bot_instance.send_animation(cfg.takes_channel, animation=take_data['animation'], **send_kwargs)
+                        sent = await bot_instance.send_animation(cfg.takes_channel, animation=take_data['animation'], **send_kwargs)
                     elif take_data.get('document'):
-                        await bot_instance.send_document(cfg.takes_channel, document=take_data['document'], **send_kwargs)
+                        sent = await bot_instance.send_document(cfg.takes_channel, document=take_data['document'], **send_kwargs)
                     elif take_data.get('voice'):
-                        await bot_instance.send_voice(cfg.takes_channel, voice=take_data['voice'], **send_kwargs)
+                        sent = await bot_instance.send_voice(cfg.takes_channel, voice=take_data['voice'], **send_kwargs)
                     elif take_data.get('audio'):
-                        await bot_instance.send_audio(cfg.takes_channel, audio=take_data['audio'], **send_kwargs)
+                        sent = await bot_instance.send_audio(cfg.takes_channel, audio=take_data['audio'], **send_kwargs)
                     elif take_data.get('sticker'):
-                        await bot_instance.send_sticker(cfg.takes_channel, sticker=take_data['sticker'])
+                        sent = await bot_instance.send_sticker(cfg.takes_channel, sticker=take_data['sticker'])
                     else:
-                        await bot_instance.send_message(
-                            cfg.takes_channel,
-                            censored if has_profanity else take_data['text'],
-                            parse_mode="HTML" if has_profanity else None,
-                            entities=entities if not has_profanity else None
+                        text_to_send = proc_text if has_prof else raw_text
+                        sent = await bot_instance.send_message(
+                            cfg.takes_channel, text=text_to_send, 
+                            parse_mode="HTML" if has_prof else None,
+                            entities=None if has_prof else entities
                         )
-                
-                db.add_take_timestamp(take_data['user_id'], bot_id)
+
+                    if sent:
+                        is_blocked_flag = bool(db.get_bot_data(user_id, bot_id).get('is_blocked', False))
+                        pub_kb = build_published_take_keyboard(str(sent.message_id), user_id, is_blocked_flag)
+                        await callback.message.edit_text("✅ Тейк опубликован.", reply_markup=pub_kb)
+
+                # ИСПРАВЛЕНИЕ: Удалили db.add_take_timestamp (он уже сработал при отправке)
                 del config.pending_takes[take_id]
                 config.save()
-                await callback.message.edit_text("✅ Тейк одобрен и отправлен в канал.")
+                
                 try:
-                    await bot_instance.send_message(take_data['user_id'], "✅ Ваш тейк одобрен!")
-                except Exception:
-                    pass
+                    await bot_instance.send_message(user_id, "✅ Ваш тейк одобрен и опубликован!")
+                except: pass
+
             except Exception as e:
-                logger.error(f"Ошибка одобрения тейка: {e}")
+                logger.error(f"Ошибка одобрения: {e}")
                 await callback.answer(f"Ошибка: {e}", show_alert=True)
             await callback.answer()
 
