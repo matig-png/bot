@@ -1049,7 +1049,7 @@ def build_main_menu(bot_id: str) -> InlineKeyboardMarkup:
     if "shop" in bot_cfg.modules:
         builder.row(
             InlineKeyboardButton(text="🛒 Магазин", callback_data="shop"),
-            InlineKeyboardButton(text="📢 Выложить объявление", callback_data="post_announcement")
+            InlineKeyboardButton(text="📢 Продать в шопе", callback_data="post_announcement")
         )
 
     builder.row(
@@ -2015,7 +2015,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
 
     @router.callback_query(F.data == "post_announcement")
     async def callback_post_announcement(callback: types.CallbackQuery, state: FSMContext):
-        """Кнопка выложить объявление."""
+        """Кнопка продать в шопе."""
         cfg = config.bots.get(bot_id)
         if not cfg or not cfg.announcement_channel:
             await callback.answer("Канал для объявлений не настроен.", show_alert=True)
