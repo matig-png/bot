@@ -9,7 +9,6 @@ from typing import Dict, Any, List, Tuple, Optional
 from html import escape as html_escape
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, asdict
-
 from aiogram import Bot, Dispatcher, types, F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -17,13 +16,10 @@ from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, User, MessageEntity
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-
 # Supabase
 from supabase import create_client, Client
-
 from aiogram import BaseMiddleware
 from typing import Callable, Dict, Any, Awaitable
-
 class RegistrationMiddleware(BaseMiddleware):
     async def __call__(
         self,
@@ -32,25 +28,20 @@ class RegistrationMiddleware(BaseMiddleware):
         data: Dict[str, Any]
     ) -> Any:
         user: Optional[User] = data.get("event_from_user")
-        
         if user and not user.is_bot:
             # Получаем bot_id из конфига или контекста (в данном случае "main" или по токену)
             # Для простоты берем bot_id из логики инициализации
             bot = data.get("bot")
             # Находим bot_id по токену в конфиге
-            bot_id = "main" # По умолчанию
+            bot_id = "main"  # По умолчанию
             for bid, cfg in config.bots.items():
                 if cfg.token == bot.token:
                     bot_id = bid
                     break
-            
             # РЕГИСТРАЦИЯ
             register_user(user, bot_id)
-            
         return await handler(event, data)
-
 # ====================== ЛОГИРОВАНИЕ ======================
-
 sys.stdout.reconfigure(line_buffering=True)
 logging.basicConfig(
     level=logging.INFO,
@@ -58,56 +49,41 @@ logging.basicConfig(
     stream=sys.stdout
 )
 logger = logging.getLogger(__name__)
-
 # ====================== КОНФИГУРАЦИЯ ======================
-
 from dotenv import load_dotenv
 import os
-
 # Загружаем переменные из .env
 load_dotenv()
-
 # ====================== КОНФИГУРАЦИЯ ======================
-
 MAIN_BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN")
 MAIN_ADMIN_ID = int(os.getenv("MAIN_ADMIN_ID"))
 ADMIN_IDS = set(map(int, os.getenv("ADMIN_IDS", "").split(",")))
 CONFIG_FILE = "bot_config.json"
 MAIN_ANNOUNCEMENT_CHANNEL = os.getenv("MAIN_ANNOUNCEMENT_CHANNEL")
-
 # Supabase конфигурация
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
 MAX_TAKES = int(os.getenv("MAX_TAKES", "3"))
 TAKE_COOLDOWN_MINUTES = int(os.getenv("TAKE_COOLDOWN_MINUTES", "3"))
-
 # Проверка обязательных переменных
 if not MAIN_BOT_TOKEN or not SUPABASE_URL or not SUPABASE_KEY:
     raise ValueError("❌ Не заданы обязательные переменные окружения! Проверь .env файл")
-
 # Паттерны для аукциона
 BET_PATTERN = re.compile(r'(?:ставлю|ставка)\s+(\d+)', re.IGNORECASE)
 PASS_PATTERN = re.compile(r'^(?:пас|лив)$', re.IGNORECASE)
 MIN_BID_INCREMENT = 5
-
 TG_LINK_PATTERN = re.compile(
     r'(?:https?://)?(?:t\.me|telegram\.me)/(?:joinchat/)?([a-zA-Z0-9_]+)',
     re.IGNORECASE
 )
-
 # ====================== НОВОЕ: Буфер для медиагрупп ======================
 media_group_buffer: Dict[str, Dict[str, Any]] = {}
 MEDIA_GROUP_TIMEOUT = 1.0  # секунды ожидания завершения альбома
-
-
 # ====================== БАЗА ДАННЫХ SUPABASE ======================
-
 class Database:
     """Supabase база данных. Данные пользователей сохраняются между обновлениями бота."""
-
-    def save_published_take(self, user_id: int, bot_id: str, channel_msg_ids: List[int], 
-                           chat_id: str, content_type: str, file_ids: List[str] = None, 
+    def save_published_take(self, user_id: int, bot_id: str, channel_msg_ids: List[int],
+                           chat_id: str, content_type: str, file_ids: List[str] = None,
                            caption: str = None):
         """Сохранить опубликованный тейк для возможности редактирования."""
         try:
@@ -124,7 +100,6 @@ class Database:
             logger.info(f"✅ Сохранён тейк {channel_msg_ids} для редактирования")
         except Exception as e:
             logger.error(f"❌ Ошибка сохранения тейка: {e}")
-
     def get_user_recent_takes(self, user_id: int, bot_id: str, hours: int = 24) -> List[Dict]:
         """Получить последние тейки пользователя за указанный период."""
         try:
@@ -134,7 +109,6 @@ class Database:
         except Exception as e:
             logger.error(f"❌ Ошибка получения тейков: {e}")
             return []
-
     def delete_published_take(self, take_id: int):
         """Удалить тейк из БД."""
         try:
@@ -142,7 +116,6 @@ class Database:
             logger.info(f"🗑️ Удалён тейк {take_id} из БД")
         except Exception as e:
             logger.error(f"❌ Ошибка удаления тейка: {e}")
-
     def cleanup_old_takes(self, hours: int = 48):
         """Очистить старые тейки из БД."""
         try:
@@ -154,10 +127,8 @@ class Database:
         except Exception as e:
             logger.error(f"❌ Ошибка очистки тейков: {e}")
             return 0
-
     def __init__(self):
         self.supabase: Optional[Client] = None
-
     def connect(self):
         """Подключение к Supabase."""
         try:
@@ -166,9 +137,7 @@ class Database:
         except Exception as e:
             logger.error(f"❌ Ошибка подключения к Supabase: {e}")
             raise
-
     # --- Пользователи ---
-
     def get_user(self, user_id: int) -> Optional[Dict]:
         """Получить данные пользователя."""
         try:
@@ -177,7 +146,6 @@ class Database:
         except Exception as e:
             logger.error(f"❌ Ошибка получения пользователя {user_id}: {e}")
             return None
-
     def create_or_update_user(self, user_id: int, username: str, name: str):
         """Создать или обновить пользователя."""
         now = datetime.now().isoformat()
@@ -199,9 +167,7 @@ class Database:
                 logger.info(f"✅ Создан новый пользователь {user_id} (@{username})")
         except Exception as e:
             logger.error(f"❌ Ошибка создания/обновления пользователя {user_id}: {e}")
-
     # --- Балансы ---
-
     def get_balance(self, user_id: int, bot_id: str) -> float:
         """Получить баланс пользователя."""
         try:
@@ -213,7 +179,6 @@ class Database:
         except Exception as e:
             logger.error(f"❌ Ошибка получения баланса {user_id}/{bot_id}: {e}")
             return 0
-
     def set_balance(self, user_id: int, bot_id: str, balance: float):
         """Установить баланс."""
         is_inf = balance == float('inf')
@@ -235,7 +200,6 @@ class Database:
             logger.info(f"💰 Установлен баланс {user_id}/{bot_id}: {balance}")
         except Exception as e:
             logger.error(f"❌ Ошибка установки баланса {user_id}/{bot_id}: {e}")
-
     def add_balance(self, user_id: int, bot_id: str, amount: float) -> bool:
         """Добавить к балансу."""
         current = self.get_balance(user_id, bot_id)
@@ -243,7 +207,6 @@ class Database:
             return True
         self.set_balance(user_id, bot_id, current + amount)
         return True
-
     def deduct_balance(self, user_id: int, bot_id: str, amount: float) -> bool:
         """Списать с баланса."""
         current = self.get_balance(user_id, bot_id)
@@ -253,9 +216,7 @@ class Database:
             return False
         self.set_balance(user_id, bot_id, current - amount)
         return True
-
     # --- Данные пользователя для бота ---
-
     def get_bot_data(self, user_id: int, bot_id: str) -> Dict:
         """Получить данные пользователя для конкретного бота."""
         try:
@@ -263,19 +224,18 @@ class Database:
             if response.data:
                 logger.debug(f"✅ Получены bot_data для {user_id}/{bot_id}")
                 return response.data[0]
-            
             # ВАЖНО: Возвращаем пустой словарь с пустым activated_at,
             # чтобы register_user понял, что это новый пользователь
             logger.debug(f"⚠️ bot_data не найдены для {user_id}/{bot_id}, возврат стандартных данных")
             return {
-                'user_id': user_id, 
+                'user_id': user_id,
                 'bot_id': bot_id,
-                'quiz_passed': False, 
+                'quiz_passed': False,
                 'show_in_top': True,
-                'is_blocked': False, 
+                'is_blocked': False,
                 'is_frozen': False,
-                'is_moderator': False, 
-                'is_admin': False, 
+                'is_moderator': False,
+                'is_admin': False,
                 'is_owner': False,
                 'activated_at': '',
                 'last_promo_at': '',
@@ -287,26 +247,24 @@ class Database:
             import traceback
             logger.error(traceback.format_exc())
             return {
-                'user_id': user_id, 
+                'user_id': user_id,
                 'bot_id': bot_id,
-                'quiz_passed': False, 
+                'quiz_passed': False,
                 'show_in_top': True,
-                'is_blocked': False, 
+                'is_blocked': False,
                 'is_frozen': False,
-                'is_moderator': False, 
-                'is_admin': False, 
+                'is_moderator': False,
+                'is_admin': False,
                 'is_owner': False,
                 'activated_at': '',
                 'last_promo_at': '',
                 'is_announcement_mod': False,
                 'is_announcement_blocked': False
             }
-
     def set_bot_data(self, user_id: int, bot_id: str, **kwargs):
         """Обновить данные пользователя для бота."""
         try:
             existing = self.supabase.table('user_bot_data').select('*').eq('user_id', user_id).eq('bot_id', bot_id).execute()
-            
             data = {
                 'user_id': user_id,
                 'bot_id': bot_id,
@@ -322,7 +280,6 @@ class Database:
                 'is_announcement_mod': kwargs.get('is_announcement_mod', False),
                 'is_announcement_blocked': kwargs.get('is_announcement_blocked', False)
             }
-            
             if existing.data:
                 # ИСПРАВЛЕНИЕ: Обновляем только переданные поля
                 update_data = {}
@@ -330,7 +287,6 @@ class Database:
                     if key not in ['user_id', 'bot_id']:
                         if key in kwargs:  # Обновляем только явно переданные значения
                             update_data[key] = kwargs[key]
-                
                 if update_data:  # Если есть что обновлять
                     self.supabase.table('user_bot_data').update(update_data).eq('user_id', user_id).eq('bot_id', bot_id).execute()
                     logger.info(f"♻️ Обновлены bot_data для {user_id}/{bot_id}: {list(update_data.keys())}")
@@ -344,9 +300,7 @@ class Database:
             logger.error(f"❌ Ошибка установки bot_data {user_id}/{bot_id}: {e}")
             import traceback
             logger.error(traceback.format_exc())  # Полный traceback для отладки
-
     # --- Тейки ---
-
     def get_take_timestamps(self, user_id: int, bot_id: str, since: datetime) -> List[str]:
         """Получить все временные метки тейков начиная с указанного времени."""
         try:
@@ -355,7 +309,6 @@ class Database:
         except Exception as e:
             logger.error(f"❌ Ошибка получения timestamps {user_id}/{bot_id}: {e}")
             return []
-
     def add_take_timestamp(self, user_id: int, bot_id: str):
         """Записать время отправки тейка."""
         try:
@@ -365,7 +318,6 @@ class Database:
                 'bot_id': bot_id,
                 'timestamp': now
             }).execute()
-            
             # Очистка старых записей (оставляем последние 20)
             all_records = self.supabase.table('take_timestamps').select('id').eq('user_id', user_id).eq('bot_id', bot_id).order('id', desc=True).execute()
             if len(all_records.data) > 20:
@@ -373,9 +325,7 @@ class Database:
                 self.supabase.table('take_timestamps').delete().eq('user_id', user_id).eq('bot_id', bot_id).not_.in_('id', ids_to_keep).execute()
         except Exception as e:
             logger.error(f"❌ Ошибка добавления timestamp {user_id}/{bot_id}: {e}")
-
     # --- Списки ---
-
     def get_all_users_for_bot(self, bot_id: str) -> List[Dict]:
         """Все пользователи с балансами в конкретном боте."""
         try:
@@ -398,7 +348,6 @@ class Database:
         except Exception as e:
             logger.error(f"❌ Ошибка получения пользователей для бота {bot_id}: {e}")
             return []
-
     def find_user_by_input(self, input_str: str) -> Optional[int]:
         """Найти пользователя по username, имени или ID."""
         input_str = input_str.strip().lstrip('@').lower()
@@ -408,21 +357,15 @@ class Database:
                 return uid
         except ValueError:
             pass
-        
         try:
             response = self.supabase.table('users').select('user_id').or_(f'username.ilike.%{input_str}%,name.ilike.%{input_str}%').execute()
             if response.data:
                 return response.data[0]['user_id']
         except Exception as e:
             logger.error(f"❌ Ошибка поиска пользователя {input_str}: {e}")
-        
         return None
-
-
 db = Database()
-
 # ====================== КОНФИГУРАЦИЯ БОТОВ (JSON) ======================
-
 @dataclass
 class BotConfig:
     bot_id: str
@@ -447,14 +390,10 @@ class BotConfig:
     shop_topics: List[Dict[str, str]] = field(default_factory=list)
     takes_paused: bool = False
     manual_control: bool = False
-
-
 @dataclass
 class ExchangeRates:
     rates: Dict[str, float] = field(default_factory=dict)
     rates_locked: bool = False
-
-
 @dataclass
 class PendingBotRequest:
     request_id: str
@@ -468,11 +407,8 @@ class PendingBotRequest:
     takes_channel: str = ""
     shop_channel: str = ""
     announcement_channel: str = ""
-
-
 class ConfigStorage:
     """Хранит конфигурации ботов и временные данные в JSON."""
-
     def __init__(self):
         self.bots: Dict[str, BotConfig] = {}
         self.exchange_rates: ExchangeRates = ExchangeRates()
@@ -487,40 +423,33 @@ class ConfigStorage:
         self.active_dispatchers: Dict[str, Dispatcher] = {}
         self.waiting_for_token: Dict[int, str] = {}
         self.auction_tasks: Dict[str, asyncio.Task] = {}
-
     def load(self):
         """Загрузка конфигурации из JSON файла."""
         try:
             if os.path.exists(CONFIG_FILE):
                 with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-
                 for bot_id, bot_data in data.get('bots', {}).items():
                     if 'announcement_channel' not in bot_data:
                         bot_data['announcement_channel'] = ""
                     if 'max_takes' not in bot_data:
                         bot_data['max_takes'] = 3
                     self.bots[bot_id] = BotConfig(**bot_data)
-
                 if 'exchange_rates' in data:
                     self.exchange_rates = ExchangeRates(**data['exchange_rates'])
-
                 for req_id, req_data in data.get('pending_requests', {}).items():
                     if 'announcement_channel' not in req_data:
                         req_data['announcement_channel'] = ""
                     self.pending_requests[req_id] = PendingBotRequest(**req_data)
-
                 self.pending_takes = data.get('pending_takes', {})
                 self.paused_takes = data.get('paused_takes', {})
                 self.pending_purchases = data.get('pending_purchases', {})
                 self.scheduled_deletions = data.get('scheduled_deletions', {})
                 self.active_quizzes = data.get('active_quizzes', {})
                 self.active_auctions = data.get('active_auctions', {})
-
                 logger.info(f"✅ Конфигурация загружена: {len(self.bots)} ботов")
         except Exception as e:
             logger.error(f"❌ Ошибка загрузки конфигурации: {e}")
-
         if "main" not in self.bots:
             self.bots["main"] = BotConfig(
                 bot_id="main",
@@ -551,7 +480,6 @@ class ConfigStorage:
                 needs_save = True
             if needs_save:
                 self.save()
-
     def save(self):
         """Сохранение конфигурации в JSON файл."""
         try:
@@ -570,13 +498,8 @@ class ConfigStorage:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"❌ Ошибка сохранения конфигурации: {e}")
-
-
 config = ConfigStorage()
-
-
 # ====================== FSM СОСТОЯНИЯ ======================
-
 class AdminStates(StatesGroup):
     WaitingUsernameForDeduct = State()
     WaitingAmountForDeduct = State()
@@ -593,42 +516,24 @@ class AdminStates(StatesGroup):
     WaitingQuizAnswer = State()
     WaitingAnnouncementModUsername = State()
     WaitingRemoveAnnouncementModUsername = State()
-
-
 class TransferStates(StatesGroup):
     WaitingReceiver = State()
     WaitingAmountAndMessage = State()
-
-
 class TakeStates(StatesGroup):
     WaitingTake = State()
     WaitingEdit = State()  # ← Добавить
-
 class BroadcastStates(StatesGroup):  # ← Новый класс
     WaitingMessage = State()
-
 class AnnouncementStates(StatesGroup):
     WaitingAnnouncement = State()
-
-
 class PromoStates(StatesGroup):
     WaitingHours = State()
     WaitingPost = State()
     WaitingConfirmation = State()
-
-
-class PurchaseStates(StatesGroup):
-    WaitingImage = State()
-    WaitingSeller = State()
-    WaitingAmount = State()
-
-
 class ConvertStates(StatesGroup):
     WaitingSource = State()
     WaitingTarget = State()
     WaitingAmount = State()
-
-
 class ConnectBotStates(StatesGroup):
     WaitingChannelUrl = State()
     WaitingCurrencyName = State()
@@ -637,18 +542,13 @@ class ConnectBotStates(StatesGroup):
     WaitingTakesChannel = State()
     WaitingShopChannel = State()
     WaitingAnnouncementChannel = State()
-
-
 class QuizStates(StatesGroup):
     Question1 = State()
     Question2 = State()
     Question3 = State()
-
 # ====================== ЦЕНЗУРА ======================
-
 _PFX = r'(?:за|на|по|от|об|до|у|о|вы|пере|при|рас|раз|про|недо|пре|с|ис|из)?'
 _PFX_EB = r'(?:за|на|по|от|отъ|об|объ|до|у|о|вы|пере|при|рас|раз|про|недо|пре|съ|ис|из|долбо)?'
-
 BASE_PROFANITY_PATTERNS = [
     _PFX + r'ху[йяеёюи]\w*',
     _PFX + r'пизд\w*',
@@ -661,8 +561,6 @@ BASE_PROFANITY_PATTERNS = [
     r'хер[а-яё]*\w*', r'жоп[аеуы]\w*', r'срать?\w*', r'сран\w*',
     r'говн[оа]\w*', r'засранец\w*', r'засранк[аи]\w*',
 ]
-
-
 def build_profanity_regex(bot_id: str) -> re.Pattern:
     """Строит регулярное выражение для цензуры."""
     bot_cfg = config.bots.get(bot_id)
@@ -671,10 +569,8 @@ def build_profanity_regex(bot_id: str) -> re.Pattern:
         for word in bot_cfg.censored_words:
             patterns.append(re.escape(word) + r'\w*')
     return re.compile(r'\b(?:' + '|'.join(patterns) + r')\b', re.IGNORECASE | re.UNICODE)
-
-
 def censor_profanity(text: str, bot_id: str) -> Tuple[str, bool]:
-    """Заменяет мат на спойлеры."""
+    """Заменяет мат на спойлеры (HTML-режим, используется для публикации в канал)."""
     if not text:
         return text, False
     regex = build_profanity_regex(bot_id)
@@ -689,8 +585,6 @@ def censor_profanity(text: str, bot_id: str) -> Tuple[str, bool]:
         last = match.end()
     parts.append(html_escape(text[last:]))
     return ''.join(parts), True
-
-
 def contains_marker_words(text: str, bot_id: str) -> bool:
     """Проверяет наличие маркерных слов."""
     if not text:
@@ -700,8 +594,6 @@ def contains_marker_words(text: str, bot_id: str) -> bool:
         return False
     text_lower = text.lower()
     return any(word.lower() in text_lower for word in bot_cfg.marker_words)
-
-
 async def check_telegram_links(text: str, bot_instance: Bot) -> Tuple[bool, str]:
     """Проверяет ссылки — если группа, отправлять на модерацию."""
     if not text:
@@ -719,32 +611,24 @@ async def check_telegram_links(text: str, bot_instance: Bot) -> Tuple[bool, str]
         except Exception:
             pass
     return False, ""
-
-
 # ====================== УТИЛИТЫ ======================
-
 def register_user(user: User, bot_id: str):
     """Регистрация пользователя в БД при первом обращении к боту."""
     uid = user.id
     username = user.username or f"user{uid}"
     name = user.full_name
-
     # ВСЕГДА создаём/обновляем пользователя
     db.create_or_update_user(uid, username, name)
-    
     # Проверяем, нужна ли инициализация (новый пользователь или нет данных)
     existing = db.get_bot_data(uid, bot_id)
-    
     # ИСПРАВЛЕНИЕ: Проверяем activated_at И что это не пустая строка
     if not existing.get('activated_at') or existing.get('activated_at') == '':
         bot_cfg = config.bots.get(bot_id)
         is_owner_flag = bot_cfg and bot_cfg.owner_id == uid
         is_admin_flag = bot_id == "main" and uid in ADMIN_IDS
         is_main_owner = bot_id == "main" and uid == MAIN_ADMIN_ID
-
         # Устанавливаем баланс ТОЛЬКО если его нет или он равен 0
         current_balance = db.get_balance(uid, bot_id)
-        
         # Устанавливаем баланс только для новых пользователей
         if current_balance == 0 and not (is_owner_flag or is_main_owner):
             if is_owner_flag or is_main_owner:
@@ -757,15 +641,14 @@ def register_user(user: User, bot_id: str):
         elif is_owner_flag or is_main_owner:
             # Владельцы всегда должны иметь бесконечный баланс
             db.set_balance(uid, bot_id, float('inf'))
-
         # Устанавливаем роли и флаги
         db.set_bot_data(uid, bot_id,
             quiz_passed=existing.get('quiz_passed', False),  # Сохраняем существующие значения
-            show_in_top=existing.get('show_in_top', True), 
-            is_blocked=existing.get('is_blocked', False), 
+            show_in_top=existing.get('show_in_top', True),
+            is_blocked=existing.get('is_blocked', False),
             is_frozen=existing.get('is_frozen', False),
-            is_moderator=existing.get('is_moderator', False), 
-            is_announcement_mod=existing.get('is_announcement_mod', False), 
+            is_moderator=existing.get('is_moderator', False),
+            is_announcement_mod=existing.get('is_announcement_mod', False),
             is_announcement_blocked=existing.get('is_announcement_blocked', False),
             is_admin=(is_admin_flag or is_owner_flag or is_main_owner),
             is_owner=(is_owner_flag or is_main_owner),
@@ -776,8 +659,6 @@ def register_user(user: User, bot_id: str):
     else:
         # НОВОЕ: Для существующих пользователей только обновляем username/name
         logger.debug(f"♻️ Пользователь {uid} (@{username}) уже зарегистрирован в боте {bot_id}")
-
-
 def check_admin(uid: int, bot_id: str) -> bool:
     """Является ли пользователь админом."""
     # Приоритет: переменные окружения для главного бота
@@ -785,16 +666,12 @@ def check_admin(uid: int, bot_id: str) -> bool:
         return True
     data = db.get_bot_data(uid, bot_id)
     return bool(data.get('is_admin') or data.get('is_owner'))
-
-
 def check_owner(uid: int, bot_id: str) -> bool:
     """Является ли пользователь владельцем."""
     if bot_id == "main" and uid == MAIN_ADMIN_ID:
         return True
     data = db.get_bot_data(uid, bot_id)
     return bool(data.get('is_owner'))
-
-
 def check_moderator(uid: int, bot_id: str) -> bool:
     """Является ли пользователь модератором тейков (или выше)."""
     # Админы и владельцы автоматически модераторы
@@ -802,22 +679,16 @@ def check_moderator(uid: int, bot_id: str) -> bool:
         return True
     data = db.get_bot_data(uid, bot_id)
     return bool(data.get('is_moderator'))
-
-
 def check_announcement_moderator(uid: int, bot_id: str) -> bool:
     """Является ли пользователь модератором объявлений."""
     if check_admin(uid, bot_id) or check_owner(uid, bot_id):
         return True
     data = db.get_bot_data(uid, bot_id)
     return bool(data.get('is_announcement_mod'))
-    
-
 def check_announcement_blocked(uid: int, bot_id: str) -> bool:
     """Заблокирован ли пользователь для объявлений (независимо от тейков)."""
     data = db.get_bot_data(uid, bot_id)
     return bool(data.get('is_announcement_blocked', False))
-
-
 def can_send_take(uid: int, bot_id: str) -> Tuple[bool, int, str]:
     """
     Проверка лимита тейков.
@@ -827,15 +698,12 @@ def can_send_take(uid: int, bot_id: str) -> Tuple[bool, int, str]:
     bot_cfg = config.bots.get(bot_id)
     if not bot_cfg:
         return False, 0, "Ошибка конфигурации"
-
     max_takes = bot_cfg.max_takes
     cooldown_minutes = bot_cfg.take_cooldown_minutes
     now = datetime.now()
-
     # Получаем тейки за последние max_takes * cooldown_minutes минут
     since = now - timedelta(minutes=max_takes * cooldown_minutes)
     recent_timestamps = db.get_take_timestamps(uid, bot_id, since)
-
     # Считаем сколько тейков ещё занимают слоты (не восстановились)
     used_slots = 0
     for ts_str in recent_timestamps:
@@ -846,12 +714,9 @@ def can_send_take(uid: int, bot_id: str) -> Tuple[bool, int, str]:
                 used_slots += 1
         except Exception:
             pass
-
     remaining = max_takes - used_slots
-
     if remaining > 0:
         return True, remaining, f"Тейков: {remaining}/{max_takes}"
-
     # Находим когда восстановится следующий тейк
     if recent_timestamps:
         sorted_ts = sorted(recent_timestamps)
@@ -866,16 +731,12 @@ def can_send_take(uid: int, bot_id: str) -> Tuple[bool, int, str]:
                     return False, 0, f"Нет тейков. Следующий через {mins}м {secs}с (0/{max_takes})"
             except Exception:
                 pass
-
     return True, 1, f"Тейков: 1/{max_takes}"
-
-
 def sync_env_admins_to_db():
     """Синхронизирует админов из .env с базой данных при запуске."""
     if not ADMIN_IDS:
         logger.warning("⚠️ ADMIN_IDS не заданы в .env")
         return
-        
     for uid in ADMIN_IDS:
         db.create_or_update_user(uid, f"admin_{uid}", "Администратор")
         db.set_balance(uid, "main", float('inf'))
@@ -887,8 +748,6 @@ def sync_env_admins_to_db():
             activated_at=datetime.now().isoformat()
         )
     logger.info(f"✅ Админы из .env синхронизированы с БД: {ADMIN_IDS}")
-
-
 def can_use_promo(uid: int, bot_id: str) -> Tuple[bool, str]:
     """Проверка: 3 дня с активации + 12ч с последнего пиара."""
     data = db.get_bot_data(uid, bot_id)
@@ -914,8 +773,6 @@ def can_use_promo(uid: int, bot_id: str) -> Tuple[bool, str]:
         except Exception:
             pass
     return True, "Доступно"
-
-
 def do_transfer(sender_id: int, receiver_id: int, bot_id: str, amount: float) -> Tuple[bool, str]:
     """Перевод валюты между пользователями."""
     sender_data = db.get_bot_data(sender_id, bot_id)
@@ -931,16 +788,12 @@ def do_transfer(sender_id: int, receiver_id: int, bot_id: str, amount: float) ->
         db.set_balance(sender_id, bot_id, sender_bal - amount)
     db.add_balance(receiver_id, bot_id, amount)
     return True, "OK"
-
-
 def get_exchange_rate(bot_id: str) -> float:
     """Получить текущий курс валюты."""
     if config.exchange_rates.rates_locked:
         bot_cfg = config.bots.get(bot_id)
         return bot_cfg.base_exchange_rate if bot_cfg else 0.5
     return config.exchange_rates.rates.get(bot_id, 0.5)
-
-
 def do_convert(uid: int, from_bot: str, to_bot: str, amount: float) -> Tuple[bool, float, str]:
     """Конвертация валюты между ботами."""
     from_bal = db.get_balance(uid, from_bot)
@@ -954,8 +807,6 @@ def do_convert(uid: int, from_bot: str, to_bot: str, amount: float) -> Tuple[boo
     db.set_balance(uid, from_bot, from_bal - amount)
     db.add_balance(uid, to_bot, converted)
     return True, converted, "OK"
-
-
 def reset_all_rates():
     """Сброс и блокировка курсов."""
     config.exchange_rates.rates_locked = True
@@ -964,8 +815,6 @@ def reset_all_rates():
         if bot_id != "main":
             config.exchange_rates.rates[bot_id] = bot_cfg.base_exchange_rate
     config.save()
-
-
 def serialize_entities(entities) -> Optional[List[Dict]]:
     """Сериализация сущностей (включая премиум-эмодзи) для сохранения."""
     if not entities:
@@ -973,12 +822,11 @@ def serialize_entities(entities) -> Optional[List[Dict]]:
     return [
         {
             'type': e.type, 'offset': e.offset, 'length': e.length,
-            'url': e.url, 'language': e.language, 
-            'custom_emoji_id': getattr(e, 'custom_emoji_id', None) # ВАЖНО
+            'url': e.url, 'language': e.language,
+            'custom_emoji_id': getattr(e, 'custom_emoji_id', None)  # ВАЖНО
         }
         for e in entities
     ]
-
 def restore_entities(data: Optional[List[Dict]]) -> Optional[List[MessageEntity]]:
     """Восстановление сущностей из базы."""
     if not data:
@@ -987,12 +835,10 @@ def restore_entities(data: Optional[List[Dict]]) -> Optional[List[MessageEntity]
         MessageEntity(
             type=e['type'], offset=e['offset'], length=e['length'],
             url=e.get('url'), language=e.get('language'),
-            custom_emoji_id=e.get('custom_emoji_id') # ВАЖНО
+            custom_emoji_id=e.get('custom_emoji_id')  # ВАЖНО
         )
         for e in data
     ]
-    
-
 def get_user_display_name(user_id: int) -> str:
     """Получить отображаемое имя пользователя (username в приоритете)."""
     user = db.get_user(user_id)
@@ -1002,9 +848,68 @@ def get_user_display_name(user_id: int) -> str:
     if username and not username.startswith('user'):
         return f"@{username}"
     return user.get('name', 'Неизвестный')
-
+# ====================== НОВОЕ: Работа с сущностями без потери премиум-эмодзи ======================
+def has_premium_emoji(entities: Optional[List[MessageEntity]]) -> bool:
+    """Проверяет, содержит ли сообщение премиум-эмодзи (custom_emoji)."""
+    if not entities:
+        return False
+    return any(getattr(e, 'type', None) == 'custom_emoji' for e in entities)
+def _utf16_len(s: str) -> int:
+    """Длина строки в UTF-16 code units — именно так Telegram Bot API считает offset/length у entities."""
+    if not s:
+        return 0
+    return len(s.encode('utf-16-le')) // 2
+def _py_index_to_utf16_offset(s: str, py_index: int) -> int:
+    """Переводит индекс python-строки (code points) в UTF-16 offset."""
+    return _utf16_len(s[:py_index])
+def build_formatted_content_with_entities(
+    text: str,
+    entities: Optional[List[MessageEntity]],
+    bot_id: str
+) -> Tuple[str, Optional[List[MessageEntity]]]:
+    """
+    Авто-оформление (подпись после #тейк) + цензура мата БЕЗ потери исходных сущностей
+    (премиум-эмодзи, жирный, курсив и т.д.).
+    В отличие от censor_profanity() (который конвертирует текст в HTML и поэтому
+    теряет все исходные сущности), здесь мат скрывается через ДОБАВЛЕНИЕ
+    spoiler-сущностей поверх исходного текста, а сам текст/эмодзи не ломаются.
+    При вставке автотекста все сущности, идущие после точки вставки, аккуратно
+    сдвигаются на длину вставки (в UTF-16 code units).
+    """
+    if not text:
+        return text, entities
+    new_text = text
+    shifted_entities: List[MessageEntity] = list(entities) if entities else []
+    if bot_id == "main":
+        match = re.search(r'#тейк', new_text, re.IGNORECASE)
+        if match:
+            insert_at = match.end()
+            tag = "\n★@Wings_teyk_bot ; @Wings_of_fire_CF★"
+            insert_utf16 = _py_index_to_utf16_offset(new_text, insert_at)
+            tag_utf16_len = _utf16_len(tag)
+            fixed_entities = []
+            for e in shifted_entities:
+                if e.offset >= insert_utf16:
+                    e = MessageEntity(
+                        type=e.type, offset=e.offset + tag_utf16_len, length=e.length,
+                        url=e.url, language=e.language,
+                        custom_emoji_id=getattr(e, 'custom_emoji_id', None)
+                    )
+                fixed_entities.append(e)
+            shifted_entities = fixed_entities
+            new_text = new_text[:insert_at] + tag + new_text[insert_at:]
+    spoiler_entities: List[MessageEntity] = []
+    try:
+        regex = build_profanity_regex(bot_id)
+        for m in regex.finditer(new_text):
+            start_utf16 = _py_index_to_utf16_offset(new_text, m.start())
+            length_utf16 = _utf16_len(m.group())
+            spoiler_entities.append(MessageEntity(type="spoiler", offset=start_utf16, length=length_utf16))
+    except Exception as e:
+        logger.error(f"Ошибка построения спойлеров цензуры: {e}")
+    all_entities = shifted_entities + spoiler_entities
+    return new_text, (all_entities or None)
 # ====================== ВСТРОЕННАЯ ВИКТОРИНА ======================
-
 BUILT_IN_QUIZ = {
     1: {
         "question": "Кто должен был быть на месте Ореолы?",
@@ -1022,16 +927,36 @@ BUILT_IN_QUIZ = {
         "correct": 1
     },
 }
-
-
 # ====================== КЛАВИАТУРЫ ======================
-
 def build_main_menu(bot_id: str) -> InlineKeyboardMarkup:
-    """Главное меню бота."""
+    """
+    Главное меню бота.
+    Обновлённая структура (упрощённая для пользователя):
+      1. Отправить тейк
+      2. Мои тейки
+      3. Продать в шопе
+      4. Валюта (подменю: заработать/перевести/топ/баланс/конвертация/курсы)
+      5. Подключить бота (только главный бот)
+    Кнопка и функция "Магазин" (покупка товара) полностью убраны.
+    """
     bot_cfg = config.bots.get(bot_id)
     if not bot_cfg:
         return InlineKeyboardMarkup(inline_keyboard=[])
-
+    builder = InlineKeyboardBuilder()
+    if "takes" in bot_cfg.modules:
+        builder.row(InlineKeyboardButton(text="📝 Отправить тейк", callback_data="send_take"))
+        builder.row(InlineKeyboardButton(text="✏️ Мои тейки", callback_data="my_takes"))
+    if "shop" in bot_cfg.modules:
+        builder.row(InlineKeyboardButton(text="📢 Продать в шопе", callback_data="post_announcement"))
+    builder.row(InlineKeyboardButton(text="💱 Валюта", callback_data="currency_menu"))
+    if bot_id == "main":
+        builder.row(InlineKeyboardButton(text="🤖 Подключить бота", callback_data="connect_bot"))
+    return builder.as_markup()
+def build_currency_menu(bot_id: str) -> InlineKeyboardMarkup:
+    """
+    Подменю "Валюта": заработать, перевести, топ, баланс, конвертация, курсы.
+    Названия кнопок и callback_data оставлены прежними — работают старые обработчики.
+    """
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="💰 Заработать", callback_data="earn"),
@@ -1041,45 +966,18 @@ def build_main_menu(bot_id: str) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🏆 Топ", callback_data="top"),
         InlineKeyboardButton(text="💳 Баланс", callback_data="balance")
     )
-
-    if "takes" in bot_cfg.modules:
-        builder.row(InlineKeyboardButton(text="📝 Отправить тейк", callback_data="send_take"))
-        builder.row(InlineKeyboardButton(text="✏️ Мои тейки", callback_data="my_takes"))  # ← Добавить
-
-    if "shop" in bot_cfg.modules:
-        builder.row(
-            InlineKeyboardButton(text="🛒 Магазин", callback_data="shop"),
-            InlineKeyboardButton(text="📢 Продать в шопе", callback_data="post_announcement")
-        )
-
     builder.row(
         InlineKeyboardButton(text="💱 Конвертация", callback_data="convert"),
         InlineKeyboardButton(text="📊 Курсы", callback_data="rates")
     )
-
-    if bot_id == "main":
-        builder.row(InlineKeyboardButton(text="🤖 Подключить бота", callback_data="connect_bot"))
-
-    return builder.as_markup()
-
-
-def build_shop_menu(bot_id: str) -> InlineKeyboardMarkup:
-    """Меню магазина."""
-    bot_cfg = config.bots.get(bot_id)
-    builder = InlineKeyboardBuilder()
-    if bot_cfg and "shop" in bot_cfg.modules:
-        builder.row(InlineKeyboardButton(text="🛍 Купить товар", callback_data="buy_product"))
     builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="back_main"))
     return builder.as_markup()
-
-
 def build_admin_menu(uid: int, bot_id: str) -> InlineKeyboardMarkup:
     """Админ-панель."""
     builder = InlineKeyboardBuilder()
     bot_cfg = config.bots.get(bot_id)
     is_owner_user = check_owner(uid, bot_id)
     is_main = uid == MAIN_ADMIN_ID and bot_id == "main"
-
     if is_owner_user or is_main:
         builder.row(
             InlineKeyboardButton(text="📋 Пользователи", callback_data="adm_users"),
@@ -1096,39 +994,31 @@ def build_admin_menu(uid: int, bot_id: str) -> InlineKeyboardMarkup:
         builder.row(
             InlineKeyboardButton(text="📢 Рассылка", callback_data="adm_broadcast")  # ← Добавить
         )
-
         if bot_cfg and "shop" in bot_cfg.modules:
             builder.row(
                 InlineKeyboardButton(text="📢 Модер объявлений", callback_data="adm_announcement_mods")
             )
-
         if bot_cfg and "takes" in bot_cfg.modules:
             pause_label = "▶️ Включить тейки" if bot_cfg.takes_paused else "⏸ Отключить тейки"
             builder.row(InlineKeyboardButton(text=pause_label, callback_data="adm_toggle_takes"))
             manual_label = "🔓 Авто-контроль" if bot_cfg.manual_control else "🔒 Ручной контроль"
             builder.row(InlineKeyboardButton(text=manual_label, callback_data="adm_toggle_manual"))
             builder.row(InlineKeyboardButton(text="🎯 Провести викторину", callback_data="adm_channel_quiz"))
-
         if is_main:
             builder.row(
                 InlineKeyboardButton(text="📊 Сбросить курсы", callback_data="adm_reset_rates"),
                 InlineKeyboardButton(text="🔄 Сбросить топ", callback_data="adm_reset_top")
             )
-
     builder.row(
         InlineKeyboardButton(text="💳 Баланс", callback_data="adm_balance"),
         InlineKeyboardButton(text="👤 Пользователь", callback_data="user_mode")
     )
     return builder.as_markup()
-
-
 def build_cancel_keyboard() -> InlineKeyboardMarkup:
     """Кнопка отмены."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")]
     ])
-
-
 def build_censor_menu() -> InlineKeyboardMarkup:
     """Меню цензуры."""
     builder = InlineKeyboardBuilder()
@@ -1145,8 +1035,6 @@ def build_censor_menu() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="◀️ Назад", callback_data="admin_mode")
     )
     return builder.as_markup()
-
-
 def build_mods_menu() -> InlineKeyboardMarkup:
     """Меню модераторов тейков."""
     builder = InlineKeyboardBuilder()
@@ -1159,8 +1047,6 @@ def build_mods_menu() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="◀️ Назад", callback_data="admin_mode")
     )
     return builder.as_markup()
-
-
 def build_announcement_mods_menu() -> InlineKeyboardMarkup:
     """Меню модераторов объявлений."""
     builder = InlineKeyboardBuilder()
@@ -1173,8 +1059,6 @@ def build_announcement_mods_menu() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="◀️ Назад", callback_data="admin_mode")
     )
     return builder.as_markup()
-
-
 def build_currency_keyboard(exclude: str = None) -> InlineKeyboardMarkup:
     """Выбор валюты для конвертации."""
     builder = InlineKeyboardBuilder()
@@ -1186,8 +1070,6 @@ def build_currency_keyboard(exclude: str = None) -> InlineKeyboardMarkup:
             ))
     builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"))
     return builder.as_markup()
-
-
 def build_modules_keyboard() -> InlineKeyboardMarkup:
     """Выбор модулей при подключении бота."""
     builder = InlineKeyboardBuilder()
@@ -1196,8 +1078,6 @@ def build_modules_keyboard() -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="📝🛒 Всё", callback_data="module_all"))
     builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"))
     return builder.as_markup()
-
-
 def build_take_moderation_keyboard(take_id: str, uid: int, is_blocked: bool) -> InlineKeyboardMarkup:
     """
     Клавиатура модерации тейка — пользователь НЕ заблокирован в тейках.
@@ -1212,8 +1092,6 @@ def build_take_moderation_keyboard(take_id: str, uid: int, is_blocked: bool) -> 
         InlineKeyboardButton(text="🚫 Заблокировать (тейки)", callback_data=f"user_block_{uid}")
     )
     return builder.as_markup()
-
-
 def build_take_moderation_keyboard_blocked(take_id: str, uid: int) -> InlineKeyboardMarkup:
     """
     Клавиатура модерации тейка — пользователь уже заблокирован в тейках.
@@ -1228,8 +1106,6 @@ def build_take_moderation_keyboard_blocked(take_id: str, uid: int) -> InlineKeyb
         InlineKeyboardButton(text="🔓 Разблокировать (тейки)", callback_data=f"take_unblock_{uid}")
     )
     return builder.as_markup()
-
-
 def build_published_take_keyboard(channel_msg_ids: List[int], uid: int, is_blocked: bool) -> InlineKeyboardMarkup:
     """
     Клавиатура для уже опубликованных тейков — пользователь НЕ заблокирован.
@@ -1245,8 +1121,6 @@ def build_published_take_keyboard(channel_msg_ids: List[int], uid: int, is_block
         InlineKeyboardButton(text="🚫 Заблокировать (тейки)", callback_data=f"user_block_{uid}")
     )
     return builder.as_markup()
-
-
 def build_published_take_keyboard_blocked(channel_msg_ids: List[int], uid: int) -> InlineKeyboardMarkup:
     """
     Клавиатура для уже опубликованных тейков — пользователь уже заблокирован.
@@ -1262,8 +1136,18 @@ def build_published_take_keyboard_blocked(channel_msg_ids: List[int], uid: int) 
         InlineKeyboardButton(text="🔓 Разблокировать (тейки)", callback_data=f"take_unblock_{uid}")
     )
     return builder.as_markup()
-
-
+def build_premium_take_keyboard(uid: int, is_blocked: bool) -> InlineKeyboardMarkup:
+    """
+    НОВОЕ: Клавиатура для тейков с премиум-эмодзи.
+    Такие тейки НЕ публикуются в канал — это анонимный фильтр для модераторов,
+    поэтому единственное доступное действие — заблокировать/разблокировать автора в тейках.
+    """
+    builder = InlineKeyboardBuilder()
+    if is_blocked:
+        builder.row(InlineKeyboardButton(text="🔓 Разблокировать (тейки)", callback_data=f"take_unblock_{uid}"))
+    else:
+        builder.row(InlineKeyboardButton(text="🚫 Заблокировать (тейки)", callback_data=f"user_block_{uid}"))
+    return builder.as_markup()
 def build_announcement_moderation_keyboard(ann_id: str, uid: int) -> InlineKeyboardMarkup:
     """
     Клавиатура модерации объявления — пользователь НЕ заблокирован в объявлениях.
@@ -1278,8 +1162,6 @@ def build_announcement_moderation_keyboard(ann_id: str, uid: int) -> InlineKeybo
         InlineKeyboardButton(text="🚫 Заблокировать (объявления)", callback_data=f"ann_block_{uid}_{ann_id}")
     )
     return builder.as_markup()
-
-
 def build_announcement_moderation_keyboard_blocked(ann_id: str, uid: int) -> InlineKeyboardMarkup:
     """
     Клавиатура модерации объявления — пользователь уже заблокирован в объявлениях.
@@ -1294,57 +1176,47 @@ def build_announcement_moderation_keyboard_blocked(ann_id: str, uid: int) -> Inl
         InlineKeyboardButton(text="🔓 Разблокировать (объявления)", callback_data=f"ann_unblock_{uid}_{ann_id}")
     )
     return builder.as_markup()
-
-
 def build_promo_confirm_keyboard() -> InlineKeyboardMarkup:
     """Подтверждение пиара."""
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="✅ Оплатить", callback_data="promo_pay"),
         InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")
     ]])
-
-
 def build_quiz_keyboard(question_num: int) -> InlineKeyboardMarkup:
     """Варианты ответов викторины."""
     builder = InlineKeyboardBuilder()
     for i, answer in enumerate(BUILT_IN_QUIZ[question_num]["answers"]):
         builder.row(InlineKeyboardButton(text=answer, callback_data=f"quiz_{question_num}_{i}"))
     return builder.as_markup()
-
-# ====================== НОВОЕ: ОБРАБОТКА МЕДИАГРУПП ======================
-
+# ====================== ПЕРЕСЫЛКА ТЕЙКОВ В КАНАЛ ======================
 async def forward_take_to_channel(message: types.Message, bot_id: str, bot_instance: Bot) -> Optional[types.Message]:
     """
     Пересылает тейк в канал с цензурой мата.
     Сохраняет спойлеры на медиа и всё форматирование текста.
     Для главного бота добавляет подпись после #тейк.
+    ПРИМЕЧАНИЕ: этот путь используется только для тейков БЕЗ премиум-эмодзи —
+    такие тейки больше не публикуются напрямую в канал (см. has_premium_emoji).
     """
     try:
         bot_cfg = config.bots.get(bot_id)
         if not bot_cfg or not bot_cfg.takes_channel:
             return None
-
         text = message.text or message.caption or ""
         entities = message.entities or message.caption_entities
-
         # Для главного бота добавляем подпись после #тейк
         if bot_id == "main":
             import re as re_module
             pattern = re_module.compile(r'(#тейк)', re_module.IGNORECASE)
             if pattern.search(text):
                 text = pattern.sub(r'\1\n★@Wings_teyk_bot ; @Wings_of_fire_CF★', text, count=1)
-
         censored, has_profanity = censor_profanity(text, bot_id)
-
         # Проверяем наличие спойлера на медиа
         has_media_spoiler = getattr(message, 'has_media_spoiler', False)
-
         send_kwargs = {
             "caption": censored if has_profanity else text,
             "parse_mode": "HTML" if has_profanity else None,
             "caption_entities": entities if not has_profanity else None
         }
-
         if message.photo:
             return await bot_instance.send_photo(
                 bot_cfg.takes_channel,
@@ -1399,9 +1271,89 @@ async def forward_take_to_channel(message: types.Message, bot_id: str, bot_insta
     except Exception as e:
         logger.error(f"Ошибка пересылки тейка: {e}")
         return None
-
+async def send_premium_emoji_take_to_moderators(
+    bid: str,
+    bot: Bot,
+    user_id: int,
+    messages: List[types.Message]
+):
+    """
+    НОВОЕ: обработка тейков с премиум-эмодзи.
+    Такие тейки НЕ публикуются в канал — бот сам собирает готовый (авто-оформленный
+    и процензуренный через spoiler-сущности) тейк и анонимно рассылает его всем
+    модераторам тейков (без имени/юзернейма отправителя). Под сообщением —
+    только кнопка блокировки/разблокировки автора в тейках.
+    Поддерживаются альбомы — приходят со всеми изображениями.
+    """
+    cfg = config.bots.get(bid)
+    if not cfg:
+        return
+    first_msg = messages[0]
+    raw_text = first_msg.text or first_msg.caption or ""
+    raw_entities = first_msg.entities or first_msg.caption_entities
+    new_text, new_entities = build_formatted_content_with_entities(raw_text, raw_entities, bid)
+    is_blocked_flag = bool(db.get_bot_data(user_id, bid).get('is_blocked', False))
+    kb = build_premium_take_keyboard(user_id, is_blocked_flag)
+    all_users = db.get_all_users_for_bot(bid)
+    moderator_ids = [u['user_id'] for u in all_users if check_moderator(u['user_id'], bid)]
+    for mod_uid in moderator_ids:
+        try:
+            if len(messages) > 1:
+                from aiogram.types import InputMediaPhoto, InputMediaVideo
+                media_group = []
+                for idx, msg in enumerate(messages):
+                    cap = new_text if idx == 0 else ""
+                    cap_entities = new_entities if idx == 0 else None
+                    msg_has_spoiler = getattr(msg, 'has_media_spoiler', False)
+                    if msg.photo:
+                        media_group.append(InputMediaPhoto(
+                            media=msg.photo[-1].file_id, caption=cap,
+                            caption_entities=cap_entities, has_spoiler=msg_has_spoiler
+                        ))
+                    elif msg.video:
+                        media_group.append(InputMediaVideo(
+                            media=msg.video.file_id, caption=cap,
+                            caption_entities=cap_entities, has_spoiler=msg_has_spoiler
+                        ))
+                if media_group:
+                    await bot.send_media_group(mod_uid, media_group)
+            else:
+                msg = first_msg
+                msg_has_spoiler = getattr(msg, 'has_media_spoiler', False)
+                if msg.photo:
+                    await bot.send_photo(
+                        mod_uid, photo=msg.photo[-1].file_id,
+                        caption=new_text, caption_entities=new_entities,
+                        has_spoiler=msg_has_spoiler
+                    )
+                elif msg.video:
+                    await bot.send_video(
+                        mod_uid, video=msg.video.file_id,
+                        caption=new_text, caption_entities=new_entities,
+                        has_spoiler=msg_has_spoiler
+                    )
+                elif msg.animation:
+                    await bot.send_animation(
+                        mod_uid, animation=msg.animation.file_id,
+                        caption=new_text, caption_entities=new_entities
+                    )
+                elif msg.document:
+                    await bot.send_document(
+                        mod_uid, document=msg.document.file_id,
+                        caption=new_text, caption_entities=new_entities
+                    )
+                elif msg.sticker:
+                    await bot.send_sticker(mod_uid, sticker=msg.sticker.file_id)
+                else:
+                    await bot.send_message(mod_uid, text=new_text, entities=new_entities)
+            await bot.send_message(
+                mod_uid,
+                "⭐ Тейк с премиум-эмодзи (аноним, не публикуется в канал)",
+                reply_markup=kb
+            )
+        except Exception as e:
+            logger.error(f"Ошибка отправки премиум-тейка модератору {mod_uid}: {e}")
 # ====================== ОТЛОЖЕННОЕ УДАЛЕНИЕ ПИАРА ======================
-
 async def delayed_delete_message(bot_instance: Bot, channel: str, message_id: int,
                                   hours: float, is_pinned: bool, deletion_id: str):
     """Удаляет сообщение пиара через указанное время."""
@@ -1425,9 +1377,7 @@ async def delayed_delete_message(bot_instance: Bot, channel: str, message_id: in
         logger.info(f"Задача удаления {deletion_id} отменена")
     except Exception as e:
         logger.error(f"Ошибка отложенного удаления: {e}")
-
 # ====================== АУКЦИОН ======================
-
 async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
     """
     Таймер аукциона.
@@ -1438,7 +1388,6 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
     bot_cfg = config.bots.get(bot_id)
     if not bot_cfg:
         return
-
     try:
         # Ждём первой ставки — без ставок не начинаем отсчёт
         while True:
@@ -1448,19 +1397,16 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
             if auction.get('current_bidder') is not None:
                 break
             await asyncio.sleep(5)
-
         # Основной цикл отсчёта
         while True:
             auction = config.active_auctions.get(auction_id)
             if not auction or auction.get('finished'):
                 return
-
             channel_id = auction['channel']
             discussion_id = auction.get('discussion_chat_id')
             message_id = auction['message_id']
             last_bid_time = datetime.fromisoformat(auction['last_bid_time'])
             snapshot_time = last_bid_time
-
             # Ждём discussion_message_id до 15 секунд
             if discussion_id and not auction.get('discussion_message_id'):
                 for _ in range(30):
@@ -1471,13 +1417,11 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
                     if auction.get('discussion_message_id'):
                         logger.info(f"Аукцион {auction_id}: discussion_message_id получен")
                         break
-
             async def send_countdown(text: str):
                 """Отправка цифры отсчёта как комментарий под постом."""
                 current_auction = config.active_auctions.get(auction_id)
                 current_disc_msg_id = current_auction.get('discussion_message_id') if current_auction else None
                 current_disc_id = current_auction.get('discussion_chat_id') if current_auction else discussion_id
-
                 # Приоритет 1: reply на пост в группе комментариев
                 if current_disc_id and current_disc_msg_id:
                     try:
@@ -1489,7 +1433,6 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
                         return
                     except Exception as e:
                         logger.error(f"Ошибка reply в группу: {e}")
-
                 # Приоритет 2: просто в группу без reply
                 if current_disc_id:
                     try:
@@ -1497,7 +1440,6 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
                         return
                     except Exception as e:
                         logger.error(f"Ошибка в группу: {e}")
-
                 # Приоритет 3: в канал с reply
                 try:
                     await bot_instance.send_message(
@@ -1505,13 +1447,11 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
                     )
                 except Exception as e:
                     logger.error(f"Ошибка отсчёта {text}: {e}")
-
             # Ждём 2 минуты с последней ставки
             wait_2min = last_bid_time + timedelta(minutes=2)
             now = datetime.now()
             if now < wait_2min:
                 await asyncio.sleep((wait_2min - now).total_seconds())
-
             auction = config.active_auctions.get(auction_id)
             if not auction or auction.get('finished'):
                 return
@@ -1520,51 +1460,42 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
             if current_last > snapshot_time:
                 logger.info(f"Аукцион {auction_id}: новая ставка, сброс")
                 continue
-
             # Пишем "3" в комментариях
             await send_countdown("3")
             logger.info(f"Аукцион {auction_id}: отсчёт 3")
             await asyncio.sleep(30)
-
             auction = config.active_auctions.get(auction_id)
             if not auction or auction.get('finished'):
                 return
             if datetime.fromisoformat(auction['last_bid_time']) > snapshot_time:
                 continue
-
             # Пишем "2" в комментариях
             await send_countdown("2")
             logger.info(f"Аукцион {auction_id}: отсчёт 2")
             await asyncio.sleep(30)
-
             auction = config.active_auctions.get(auction_id)
             if not auction or auction.get('finished'):
                 return
             if datetime.fromisoformat(auction['last_bid_time']) > snapshot_time:
                 continue
-
             # Пишем "1" в комментариях
             await send_countdown("1")
             logger.info(f"Аукцион {auction_id}: отсчёт 1")
             await asyncio.sleep(30)
-
             # Финальная проверка
             auction = config.active_auctions.get(auction_id)
             if not auction or auction.get('finished'):
                 return
             if datetime.fromisoformat(auction['last_bid_time']) > snapshot_time:
                 continue
-
             # === ОБЪЯВЛЕНИЕ ПОБЕДИТЕЛЯ ПОСТОМ В КАНАЛЕ ===
             winner_id = auction.get('current_bidder')
             winner_amount = auction.get('current_bid', 0)
             auction['finished'] = True
             config.save()
-
             if winner_id:
                 winner_display = get_user_display_name(winner_id)
                 winner_balance = db.get_balance(winner_id, bot_id)
-
                 if winner_balance != float('inf') and winner_balance < winner_amount:
                     try:
                         target = discussion_id if discussion_id else channel_id
@@ -1596,25 +1527,20 @@ async def run_auction_timer(bot_instance: Bot, bot_id: str, auction_id: str):
                         )
                     except Exception:
                         pass
-
             if auction_id in config.active_auctions:
                 del config.active_auctions[auction_id]
                 config.save()
             return
-
     except asyncio.CancelledError:
         logger.info(f"Аукцион {auction_id} отменён")
     except Exception as e:
         logger.error(f"Ошибка аукциона: {e}")
-
 # ====================== ОБРАБОТЧИКИ БОТА ======================
-
 def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     """Создаёт все обработчики для конкретного бота."""
     # ИСПРАВЛЕНИЕ: Создаём НОВЫЙ роутер для КАЖДОГО бота
     router = Router(name=f"bot_{bot_id}_handlers")
     bot_config = config.bots.get(bot_id)
-
     @router.message(Command("start"))
     async def cmd_start(message: types.Message, state: FSMContext):
         await state.clear()
@@ -1634,72 +1560,57 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 f"👋 Добро пожаловать!\nВалюта: {cfg.currency_name} {cfg.currency_emoji}",
                 reply_markup=build_main_menu(bot_id)
             )
-
     # =================== ПЕРЕВОДЫ ИЗ ГРУППЫ ===================
-
     @router.message(F.text.regexp(r'(?i)^перевести?\s+(\d+(?:\.\d+)?)\s+(.+)'))
     async def group_transfer(message: types.Message):
         """Перевод валюты через команду в группе: перевести 100 @username"""
         # Работает только в группах
         if message.chat.type not in ("group", "supergroup"):
             return
-        
         register_user(message.from_user, bot_id)
-        
         # Парсим сумму и получателя
         import re
         match = re.match(r'(?i)^перевести?\s+(\d+(?:\.\d+)?)\s+(.+)', message.text)
         if not match:
             return
-        
         try:
             amount = float(match.group(1))
             receiver_input = match.group(2).strip()
         except ValueError:
             await message.reply("❌ Неверный формат суммы")
             return
-        
         if amount <= 0:
             await message.reply("❌ Сумма должна быть больше 0")
             return
-        
         # Ищем получателя
         receiver_id = db.find_user_by_input(receiver_input)
         if not receiver_id:
             await message.reply(f"❌ Пользователь '{receiver_input}' не найден")
             return
-        
         if receiver_id == message.from_user.id:
             await message.reply("❌ Нельзя перевести самому себе")
             return
-        
         # Проверяем заморозку счетов
         sender_data = db.get_bot_data(message.from_user.id, bot_id)
         receiver_data = db.get_bot_data(receiver_id, bot_id)
-        
         if sender_data.get('is_frozen'):
             await message.reply("❄️ Ваш счёт заморожен")
             return
-        
         if receiver_data.get('is_frozen'):
             await message.reply("❄️ Счёт получателя заморожен")
             return
-        
         # Выполняем перевод
         cfg = config.bots.get(bot_id)
         success, error = do_transfer(message.from_user.id, receiver_id, bot_id, amount)
-        
         if success:
             receiver_user = db.get_user(receiver_id)
             sender_name = message.from_user.full_name
             receiver_name = f"@{receiver_user['username']}" if receiver_user.get('username') else receiver_user.get('name', 'Неизвестный')
-            
             await message.reply(
                 f"✅ Перевод выполнен!\n"
                 f"💸 {sender_name} → {receiver_name}\n"
                 f"💰 Сумма: {amount:.0f} {cfg.currency_emoji}"
             )
-            
             # Уведомляем получателя в ЛС (если возможно)
             try:
                 await bot_instance.send_message(
@@ -1712,23 +1623,19 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 pass
         else:
             await message.reply(f"❌ {error}")
-
     @router.message(Command("cancel"))
     async def cmd_cancel(message: types.Message, state: FSMContext):
         await state.clear()
         await message.answer("Действие отменено.", reply_markup=build_main_menu(bot_id))
-
     @router.callback_query(F.data == "cancel")
     async def callback_cancel(callback: types.CallbackQuery, state: FSMContext):
         await state.clear()
         await callback.message.edit_text("Действие отменено.", reply_markup=build_main_menu(bot_id))
         await callback.answer()
-
     @router.callback_query(F.data == "user_mode")
     async def callback_user_mode(callback: types.CallbackQuery):
         await callback.message.edit_text("Выберите действие:", reply_markup=build_main_menu(bot_id))
         await callback.answer()
-
     @router.callback_query(F.data == "admin_mode")
     async def callback_admin_mode(callback: types.CallbackQuery):
         if check_admin(callback.from_user.id, bot_id):
@@ -1739,17 +1646,19 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         else:
             await callback.answer("Нет доступа", show_alert=True)
         await callback.answer()
-
     @router.callback_query(F.data == "back_main")
     async def callback_back_main(callback: types.CallbackQuery):
         await callback.message.edit_text("Выберите действие:", reply_markup=build_main_menu(bot_id))
         await callback.answer()
-
+    @router.callback_query(F.data == "currency_menu")
+    async def callback_currency_menu(callback: types.CallbackQuery):
+        """НОВОЕ: подменю 'Валюта' — баланс/перевод/топ/курсы/конвертация/заработок."""
+        await callback.message.edit_text("💱 Валюта:", reply_markup=build_currency_menu(bot_id))
+        await callback.answer()
     @router.callback_query(F.data == "balance")
     async def callback_balance(callback: types.CallbackQuery):
         cfg = config.bots.get(bot_id)
         user_data = db.get_bot_data(callback.from_user.id, bot_id)
-
         status_text = ""
         if user_data.get('is_frozen'):
             status_text += "❄️ Счёт заморожен\n"
@@ -1757,26 +1666,20 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             status_text += "🚫 Заблокирован для тейков\n"
         if user_data.get('is_announcement_blocked'):
             status_text += "🚫 Заблокирован для объявлений\n"
-
         main_balance = db.get_balance(callback.from_user.id, bot_id)
         main_bal_str = "∞" if main_balance == float('inf') else f"{main_balance:.0f}"
-
         text = f"{status_text}💳 Балансы:\n\n"
         text += f"▸ {cfg.currency_name} {cfg.currency_emoji}: {main_bal_str} (текущий)\n"
-
         for other_bot_id, other_cfg in config.bots.items():
             if other_bot_id != bot_id:
                 other_balance = db.get_balance(callback.from_user.id, other_bot_id)
                 if other_balance > 0 or other_balance == float('inf'):
                     other_str = "∞" if other_balance == float('inf') else f"{other_balance:.0f}"
                     text += f"▸ {other_cfg.currency_name} {other_cfg.currency_emoji}: {other_str}\n"
-
         can_take, remaining_takes, cooldown_msg = can_send_take(callback.from_user.id, bot_id)
         text += f"\n📝 {cooldown_msg}"
-
-        await callback.message.edit_text(text, reply_markup=build_main_menu(bot_id))
+        await callback.message.edit_text(text, reply_markup=build_currency_menu(bot_id))
         await callback.answer()
-
     @router.callback_query(F.data == "top")
     async def callback_top(callback: types.CallbackQuery):
         cfg = config.bots.get(bot_id)
@@ -1792,9 +1695,8 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             text += f"{i}. @{username} — {balance:.0f} {cfg.currency_emoji}\n"
         if not filtered:
             text += "Пока пусто"
-        await callback.message.edit_text(text, reply_markup=build_main_menu(bot_id))
+        await callback.message.edit_text(text, reply_markup=build_currency_menu(bot_id))
         await callback.answer()
-
     @router.callback_query(F.data == "transfer")
     async def callback_transfer(callback: types.CallbackQuery, state: FSMContext):
         user_data = db.get_bot_data(callback.from_user.id, bot_id)
@@ -1807,7 +1709,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         )
         await state.set_state(TransferStates.WaitingReceiver)
         await callback.answer()
-
     @router.message(TransferStates.WaitingReceiver)
     async def transfer_receiver(message: types.Message, state: FSMContext):
         receiver_id = db.find_user_by_input(message.text)
@@ -1827,7 +1728,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             reply_markup=build_cancel_keyboard()
         )
         await state.set_state(TransferStates.WaitingAmountAndMessage)
-
     @router.message(TransferStates.WaitingAmountAndMessage)
     async def transfer_amount(message: types.Message, state: FSMContext):
         lines = message.text.strip().split('\n', 1)
@@ -1848,7 +1748,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             sender = db.get_user(message.from_user.id)
             await message.answer(
                 f"✅ Переведено {amount:.0f} {cfg.currency_emoji} пользователю @{receiver['username']}",
-                reply_markup=build_main_menu(bot_id)
+                reply_markup=build_currency_menu(bot_id)
             )
             notification = f"💰 Получено {amount:.0f} {cfg.currency_emoji} от @{sender['username']}"
             if transfer_msg:
@@ -1858,9 +1758,8 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             except Exception:
                 pass
         else:
-            await message.answer(f"❌ {error}", reply_markup=build_main_menu(bot_id))
+            await message.answer(f"❌ {error}", reply_markup=build_currency_menu(bot_id))
         await state.clear()
-
     @router.callback_query(F.data == "rates")
     async def callback_rates(callback: types.CallbackQuery):
         text = "Базовый курс 2 к 1 рублю, ниже курс валют относительно базы\n\n📊 Курсы валют:\n\n"
@@ -1869,9 +1768,8 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             text += f"{cfg.currency_name} {cfg.currency_emoji}: {rate:.2f}\n"
         if config.exchange_rates.rates_locked:
             text += "\n🔒 Курсы зафиксированы"
-        await callback.message.edit_text(text, reply_markup=build_main_menu(bot_id))
+        await callback.message.edit_text(text, reply_markup=build_currency_menu(bot_id))
         await callback.answer()
-
     @router.callback_query(F.data == "convert")
     async def callback_convert(callback: types.CallbackQuery, state: FSMContext):
         balance = db.get_balance(callback.from_user.id, bot_id)
@@ -1884,7 +1782,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         )
         await state.set_state(ConvertStates.WaitingSource)
         await callback.answer()
-
     @router.callback_query(ConvertStates.WaitingSource, F.data.startswith("currency_"))
     async def convert_source(callback: types.CallbackQuery, state: FSMContext):
         source_bot = callback.data[9:]
@@ -1895,7 +1792,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         )
         await state.set_state(ConvertStates.WaitingTarget)
         await callback.answer()
-
     @router.callback_query(ConvertStates.WaitingTarget, F.data.startswith("currency_"))
     async def convert_target(callback: types.CallbackQuery, state: FSMContext):
         target_bot = callback.data[9:]
@@ -1913,7 +1809,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         )
         await state.set_state(ConvertStates.WaitingAmount)
         await callback.answer()
-
     @router.message(ConvertStates.WaitingAmount)
     async def convert_amount(message: types.Message, state: FSMContext):
         try:
@@ -1932,12 +1827,11 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         if success:
             await message.answer(
                 f"✅ Конвертировано:\n{amount:.0f} {source_cfg.currency_emoji} → {converted:.0f} {target_cfg.currency_emoji}",
-                reply_markup=build_main_menu(bot_id)
+                reply_markup=build_currency_menu(bot_id)
             )
         else:
-            await message.answer(f"❌ {error}", reply_markup=build_main_menu(bot_id))
+            await message.answer(f"❌ {error}", reply_markup=build_currency_menu(bot_id))
         await state.clear()
-
     @router.callback_query(F.data == "earn")
     async def callback_earn(callback: types.CallbackQuery):
         cfg = config.bots.get(bot_id)
@@ -1945,10 +1839,9 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         if cfg.channel_url:
             builder.row(InlineKeyboardButton(text="📢 Перейти в канал", url=cfg.channel_url))
         builder.row(InlineKeyboardButton(text="❓ Викторина", callback_data="quiz_start"))
-        builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="back_main"))
+        builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="currency_menu"))
         await callback.message.edit_text("Способы заработка:", reply_markup=builder.as_markup())
         await callback.answer()
-
     @router.callback_query(F.data == "quiz_start")
     async def callback_quiz_start(callback: types.CallbackQuery, state: FSMContext):
         user_data = db.get_bot_data(callback.from_user.id, bot_id)
@@ -1961,7 +1854,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         )
         await state.set_state(QuizStates.Question1)
         await callback.answer()
-
     @router.callback_query(QuizStates.Question1, F.data.startswith("quiz_1_"))
     async def quiz_answer_1(callback: types.CallbackQuery, state: FSMContext):
         cfg = config.bots.get(bot_id)
@@ -1974,10 +1866,9 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await state.set_state(QuizStates.Question2)
         else:
             await callback.answer("❌ Неправильно!", show_alert=True)
-            await callback.message.edit_text("Неправильный ответ.", reply_markup=build_main_menu(bot_id))
+            await callback.message.edit_text("Неправильный ответ.", reply_markup=build_currency_menu(bot_id))
             await state.clear()
         await callback.answer()
-
     @router.callback_query(QuizStates.Question2, F.data.startswith("quiz_2_"))
     async def quiz_answer_2(callback: types.CallbackQuery, state: FSMContext):
         cfg = config.bots.get(bot_id)
@@ -1990,10 +1881,9 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await state.set_state(QuizStates.Question3)
         else:
             await callback.answer("❌ Неправильно!", show_alert=True)
-            await callback.message.edit_text("Неправильный ответ.", reply_markup=build_main_menu(bot_id))
+            await callback.message.edit_text("Неправильный ответ.", reply_markup=build_currency_menu(bot_id))
             await state.clear()
         await callback.answer()
-
     @router.callback_query(QuizStates.Question3, F.data.startswith("quiz_3_"))
     async def quiz_answer_3(callback: types.CallbackQuery, state: FSMContext):
         cfg = config.bots.get(bot_id)
@@ -2003,16 +1893,14 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             total_reward = cfg.quiz_reward * 3
             await callback.message.edit_text(
                 f"🎉 Викторина пройдена!\n+{total_reward} {cfg.currency_emoji}",
-                reply_markup=build_main_menu(bot_id)
+                reply_markup=build_currency_menu(bot_id)
             )
         else:
             await callback.answer("❌ Неправильно!", show_alert=True)
-            await callback.message.edit_text("Неправильный ответ.", reply_markup=build_main_menu(bot_id))
+            await callback.message.edit_text("Неправильный ответ.", reply_markup=build_currency_menu(bot_id))
         await state.clear()
         await callback.answer()
-
-    # =================== ОБЪЯВЛЕНИЯ (С ПОДДЕРЖКОЙ МЕДИАГРУПП) ===================
-
+    # =================== ОБЪЯВЛЕНИЯ (С ПОДДЕРЖКОЙ МЕДИАГРУПП И ПРЕМИУМ-ЭМОДЗИ) ===================
     @router.callback_query(F.data == "post_announcement")
     async def callback_post_announcement(callback: types.CallbackQuery, state: FSMContext):
         """Кнопка продать в шопе."""
@@ -2026,24 +1914,19 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         )
         await state.set_state(AnnouncementStates.WaitingAnnouncement)
         await callback.answer()
-
     async def process_announcement_media_group_complete(group_id: str, bot: Bot, state: FSMContext):
-        """Завершение обработки медиагруппы объявления."""
+        """Завершение обработки медиагруппы объявления. Анонимно, с сохранением премиум-эмодзи."""
         await asyncio.sleep(MEDIA_GROUP_TIMEOUT)
-        
         if group_id not in media_group_buffer:
             return
-        
         group_data = media_group_buffer[group_id]
         messages = group_data['messages']
         user_id = group_data['user_id']
-        
         cfg = config.bots.get(bot_id)
         if not cfg or not cfg.announcement_channel:
             if group_id in media_group_buffer:
                 del media_group_buffer[group_id]
             return
-        
         if check_announcement_blocked(user_id, bot_id):
             try:
                 await bot.send_message(user_id, "🚫 Вы заблокированы для отправки объявлений.", reply_markup=build_main_menu(bot_id))
@@ -2053,7 +1936,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 del media_group_buffer[group_id]
             await state.clear()
             return
-        
         all_users = db.get_all_users_for_bot(bot_id)
         announcement_mods = []
         for user in all_users:
@@ -2063,11 +1945,9 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         for user in all_users:
             if check_admin(user['user_id'], bot_id) and user['user_id'] not in announcement_mods:
                 announcement_mods.append(user['user_id'])
-        
         if announcement_mods:
             ann_id = str(uuid.uuid4())[:8]
             ann_key = f"ann_{ann_id}"
-            
             config.pending_takes[ann_key] = {
                 'user_id': user_id, 'bot_id': bot_id, 'type': 'announcement_media_group',
                 'media_group': [
@@ -2083,36 +1963,32 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 ]
             }
             config.save()
-            
             is_ann_blocked = check_announcement_blocked(user_id, bot_id)
-            
             for mod_uid in announcement_mods:
                 try:
+                    # Пересылаем анонимно (без имени отправителя), сохраняя премиум-эмодзи
+                    # через caption_entities каждого элемента альбома.
                     from aiogram.types import InputMediaPhoto, InputMediaVideo
                     mod_media_group = []
                     for idx, msg in enumerate(messages):
                         text_caption = msg.caption or "" if idx == 0 else ""
                         entities = msg.caption_entities if (idx == 0 and hasattr(msg, 'caption_entities')) else None
-                        has_spoiler = getattr(msg, 'has_media_spoiler', False)
+                        msg_has_spoiler = getattr(msg, 'has_media_spoiler', False)
                         if msg.photo:
-                            mod_media_group.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=text_caption, caption_entities=entities, has_spoiler=has_spoiler))
+                            mod_media_group.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=text_caption, caption_entities=entities, has_spoiler=msg_has_spoiler))
                         elif msg.video:
-                            mod_media_group.append(InputMediaVideo(media=msg.video.file_id, caption=text_caption, caption_entities=entities, has_spoiler=has_spoiler))
-                    
+                            mod_media_group.append(InputMediaVideo(media=msg.video.file_id, caption=text_caption, caption_entities=entities, has_spoiler=msg_has_spoiler))
                     await bot.send_media_group(mod_uid, mod_media_group)
-                    
                     # ИСПРАВЛЕНИЕ: только 2 параметра
                     if is_ann_blocked:
                         mod_kb = build_announcement_moderation_keyboard_blocked(ann_id, user_id)
                     else:
                         mod_kb = build_announcement_moderation_keyboard(ann_id, user_id)
-                    
                     await bot.send_message(mod_uid, f"📢 Новое объявление (альбом: {len(messages)} медиа) на проверке", reply_markup=mod_kb)
                 except Exception as e:
                     logger.error(f"Ошибка отправки модератору: {e}")
                     import traceback
                     logger.error(traceback.format_exc())
-            
             try:
                 await bot.send_message(user_id, "📝 Объявление отправлено на модерацию.", reply_markup=build_main_menu(bot_id))
             except Exception:
@@ -2124,21 +2000,18 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 for idx, msg in enumerate(messages):
                     text = msg.caption or "" if idx == 0 else ""
                     entities = msg.caption_entities if (idx == 0 and hasattr(msg, 'caption_entities')) else None
-                    has_spoiler = getattr(msg, 'has_media_spoiler', False)
+                    msg_has_spoiler = getattr(msg, 'has_media_spoiler', False)
                     if msg.photo:
-                        media_group.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=text, caption_entities=entities, has_spoiler=has_spoiler))
+                        media_group.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=text, caption_entities=entities, has_spoiler=msg_has_spoiler))
                     elif msg.video:
-                        media_group.append(InputMediaVideo(media=msg.video.file_id, caption=text, caption_entities=entities, has_spoiler=has_spoiler))
-                
+                        media_group.append(InputMediaVideo(media=msg.video.file_id, caption=text, caption_entities=entities, has_spoiler=msg_has_spoiler))
                 await bot.send_media_group(cfg.announcement_channel, media_group)
                 await bot.send_message(user_id, "✅ Ваше объявление опубликовано!", reply_markup=build_main_menu(bot_id))
             except Exception as e:
                 logger.error(f"Ошибка публикации: {e}")
-        
         if group_id in media_group_buffer:
             del media_group_buffer[group_id]
         await state.clear()
-
     @router.message(AnnouncementStates.WaitingAnnouncement, F.media_group_id)
     async def process_announcement_media_group(message: types.Message, state: FSMContext):
         """Обработка медиагруппы объявления."""
@@ -2150,25 +2023,21 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             }
             asyncio.create_task(process_announcement_media_group_complete(group_id, bot_instance, state))
         media_group_buffer[group_id]['messages'].append(message)
-
     @router.message(AnnouncementStates.WaitingAnnouncement)
     async def process_announcement(message: types.Message, state: FSMContext):
-        """Обработка одиночного объявления."""
+        """Обработка одиночного объявления (анонимно, copy_to сохраняет премиум-эмодзи)."""
         register_user(message.from_user, bot_id)
         cfg = config.bots.get(bot_id)
         if not cfg or not cfg.announcement_channel:
             await message.answer("Канал не настроен.", reply_markup=build_main_menu(bot_id))
             await state.clear()
             return
-
         if check_announcement_blocked(message.from_user.id, bot_id):
             await message.answer("🚫 Вы заблокированы для отправки объявлений.", reply_markup=build_main_menu(bot_id))
             await state.clear()
             return
-
         all_users = db.get_all_users_for_bot(bot_id)
         announcement_mods = [u['user_id'] for u in all_users if (db.get_bot_data(u['user_id'], bot_id).get('is_announcement_mod') or check_admin(u['user_id'], bot_id))]
-
         if announcement_mods:
             ann_id = str(uuid.uuid4())[:8]
             ann_key = f"ann_{ann_id}"
@@ -2178,24 +2047,21 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 'type': 'announcement'
             }
             config.save()
-
             is_ann_blocked = check_announcement_blocked(message.from_user.id, bot_id)
             for mod_uid in announcement_mods:
                 try:
+                    # copy_to не раскрывает отправителя и сохраняет премиум-эмодзи "из коробки"
                     await message.copy_to(mod_uid)
-                    
                     # ИСПРАВЛЕНИЕ: только 2 параметра
                     if is_ann_blocked:
                         mod_kb = build_announcement_moderation_keyboard_blocked(ann_id, message.from_user.id)
                     else:
                         mod_kb = build_announcement_moderation_keyboard(ann_id, message.from_user.id)
-                    
                     await bot_instance.send_message(mod_uid, f"📢 Новое объявление на проверке", reply_markup=mod_kb)
                 except Exception as e:
                     logger.error(f"Ошибка отправки модератору: {e}")
                     import traceback
                     logger.error(traceback.format_exc())
-            
             await message.answer("📝 Объявление отправлено на модерацию.", reply_markup=build_main_menu(bot_id))
         else:
             try:
@@ -2203,9 +2069,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 await message.answer("✅ Опубликовано!", reply_markup=build_main_menu(bot_id))
             except Exception as e:
                 logger.error(f"Ошибка публикации: {e}")
-        
         await state.clear()
-
     @router.callback_query(F.data.startswith("ann_approve_"))
     async def announcement_approve(callback: types.CallbackQuery):
         """Одобрение объявления модератором."""
@@ -2223,18 +2087,16 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 for idx, media_info in enumerate(ann_data['media_group']):
                     text = media_info.get('caption', '') if idx == 0 else ""
                     entities = restore_entities(media_info.get('caption_entities')) if idx == 0 else None
-                    has_spoiler = media_info.get('has_spoiler', False)
+                    msg_has_spoiler = media_info.get('has_spoiler', False)
                     if media_info.get('photo'):
-                        media_group.append(InputMediaPhoto(media=media_info['photo'], caption=text, caption_entities=entities, has_spoiler=has_spoiler))
+                        media_group.append(InputMediaPhoto(media=media_info['photo'], caption=text, caption_entities=entities, has_spoiler=msg_has_spoiler))
                     elif media_info.get('video'):
-                        media_group.append(InputMediaVideo(media=media_info['video'], caption=text, caption_entities=entities, has_spoiler=has_spoiler))
-                
+                        media_group.append(InputMediaVideo(media=media_info['video'], caption=text, caption_entities=entities, has_spoiler=msg_has_spoiler))
                 await bot_instance.send_media_group(cfg.announcement_channel, media_group)
                 await callback.message.edit_text("✅ Альбом одобрен и опубликован.")
             else:
                 await bot_instance.copy_message(chat_id=cfg.announcement_channel, from_chat_id=ann_data['chat_id'], message_id=ann_data['message_id'])
                 await callback.message.edit_text("✅ Одобрено и опубликовано.")
-            
             del config.pending_takes[ann_key]
             config.save()
             try:
@@ -2245,7 +2107,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             logger.error(f"Ошибка одобрения: {e}")
             await callback.answer(f"Ошибка: {e}", show_alert=True)
         await callback.answer()
-
     @router.callback_query(F.data.startswith("ann_reject_"))
     async def announcement_reject(callback: types.CallbackQuery):
         """Отклонение объявления модератором."""
@@ -2261,7 +2122,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             config.save()
         await callback.message.edit_text("❌ Объявление отклонено.")
         await callback.answer()
-
     @router.callback_query(F.data.startswith("ann_block_"))
     async def announcement_block_user(callback: types.CallbackQuery):
         """Блокировка пользователя для объявлений."""
@@ -2281,7 +2141,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         except Exception:
             pass
         await callback.answer("🚫 Заблокирован для объявлений", show_alert=True)
-
     @router.callback_query(F.data.startswith("ann_unblock_"))
     async def announcement_unblock_user(callback: types.CallbackQuery):
         """Разблокировка пользователя для объявлений."""
@@ -2301,16 +2160,12 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         except Exception:
             pass
         await callback.answer("✅ Разблокирован для объявлений", show_alert=True)
-
-    # =================== ТЕЙКИ С ПОДДЕРЖКОЙ МЕДИАГРУПП ===================
-
+    # =================== ТЕЙКИ С ПОДДЕРЖКОЙ МЕДИАГРУПП И ПРЕМИУМ-ЭМОДЗИ ===================
     if bot_config and "takes" in bot_config.modules:
-
-        # =================== НОВОЕ: Обработчик медиагрупп для тейков ===================
+        # =================== Обработчик медиагрупп для тейков ===================
         async def handle_take_media_group(message: types.Message, bid: str, bot: Bot, state: FSMContext):
             """Обработка медиагруппы тейка."""
             group_id = f"take_{message.media_group_id}"
-            
             if group_id not in media_group_buffer:
                 media_group_buffer[group_id] = {
                     'messages': [],
@@ -2321,28 +2176,21 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 }
                 # Запускаем таймер обработки
                 asyncio.create_task(process_take_media_group_complete(group_id, bot))
-            
             media_group_buffer[group_id]['messages'].append(message)
-
         async def process_take_media_group_complete(group_id: str, bot: Bot):
             """Завершение обработки медиагруппы тейка."""
             await asyncio.sleep(MEDIA_GROUP_TIMEOUT)
-            
             if group_id not in media_group_buffer:
                 return
-            
             group_data = media_group_buffer[group_id]
             messages = group_data['messages']
             user_id = group_data['user_id']
             bid = group_data['bot_id']
-            
             cfg = config.bots.get(bid)
             if not cfg:
                 del media_group_buffer[group_id]
                 return
-            
             user_data = db.get_bot_data(user_id, bid)
-            
             # Проверка блокировки тейков
             if user_data.get('is_blocked'):
                 try:
@@ -2351,7 +2199,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     pass
                 del media_group_buffer[group_id]
                 return
-            
             can_take, remaining_takes, cooldown_msg = can_send_take(user_id, bid)
             if not can_take:
                 try:
@@ -2360,12 +2207,10 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     pass
                 del media_group_buffer[group_id]
                 return
-            
             # Сортируем по ID сообщения
             messages.sort(key=lambda m: m.message_id)
             first_msg = messages[0]
             text = first_msg.text or first_msg.caption or ""
-            
             # Проверяем наличие #тейк
             if "#тейк" not in text.lower():
                 try:
@@ -2374,7 +2219,21 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     pass
                 del media_group_buffer[group_id]
                 return
-            
+            # НОВОЕ: тейки с премиум-эмодзи никогда не публикуются в канал —
+            # бот сам собирает авто-оформленный анонимный тейк и шлёт его модераторам.
+            entities_for_check = first_msg.entities or first_msg.caption_entities
+            if has_premium_emoji(entities_for_check):
+                await send_premium_emoji_take_to_moderators(bid, bot, user_id, messages)
+                try:
+                    await bot.send_message(
+                        user_id,
+                        "📝 Тейк отправлен на модерацию.",
+                        reply_markup=build_main_menu(bid)
+                    )
+                except Exception:
+                    pass
+                del media_group_buffer[group_id]
+                return
             if cfg.takes_paused:
                 # Сохраняем в очередь паузы
                 take_data = {
@@ -2406,21 +2265,17 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     pass
                 del media_group_buffer[group_id]
                 return
-            
             needs_moderation = cfg.manual_control
             moderation_reason = "Ручной контроль"
-            
             if not needs_moderation:
                 if contains_marker_words(text, bid):
                     needs_moderation = True
                     moderation_reason = "Маркерное слово"
-            
             if not needs_moderation:
                 has_group_link, link_reason = await check_telegram_links(text, bot)
                 if has_group_link:
                     needs_moderation = True
                     moderation_reason = link_reason
-            
             if needs_moderation:
                 # Отправка на модерацию
                 take_id = str(uuid.uuid4())[:8]
@@ -2439,7 +2294,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     ]
                 }
                 config.save()
-                
                 is_blocked_flag = bool(db.get_bot_data(user_id, bid).get('is_blocked', False))
                 all_users = db.get_all_users_for_bot(bid)
                 for user in all_users:
@@ -2455,12 +2309,11 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                                 f"⚠️ Тейк-альбом ({len(messages)} медиа) на модерации\nПричина: {moderation_reason}",
                                 reply_markup=mod_kb
                             )
-                            # Пересылаем все медиа
+                            # Пересылаем все медиа анонимно (copy_to)
                             for msg in messages:
                                 await msg.copy_to(mod_uid)
                         except Exception as e:
                             logger.error(f"Ошибка отправки модератору {mod_uid}: {e}")
-                
                 try:
                     await bot.send_message(
                         user_id,
@@ -2473,29 +2326,25 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 # Публикуем напрямую медиагруппу
                 try:
                     from aiogram.types import InputMediaPhoto, InputMediaVideo
-                    
                     media_group = []
                     for idx, msg in enumerate(messages):
                         text_caption = msg.caption or "" if idx == 0 else ""
                         entities = msg.caption_entities if (idx == 0 and hasattr(msg, 'caption_entities')) else None
-                        
                         # Для главного бота добавляем подпись
                         if bid == "main" and idx == 0 and text_caption:
                             import re as re_module
                             pattern = re_module.compile(r'(#тейк)', re_module.IGNORECASE)
                             if pattern.search(text_caption):
                                 text_caption = pattern.sub(r'\1\n★@Wings_teyk_bot ; @Wings_of_fire_CF★', text_caption, count=1)
-                        
                         censored, has_prof = censor_profanity(text_caption, bid)
-                        has_spoiler = getattr(msg, 'has_media_spoiler', False)
-                        
+                        msg_has_spoiler = getattr(msg, 'has_media_spoiler', False)
                         if msg.photo:
                             media_group.append(InputMediaPhoto(
                                 media=msg.photo[-1].file_id,
                                 caption=censored if (idx == 0 and has_prof) else (text_caption if idx == 0 else ""),
                                 parse_mode="HTML" if (idx == 0 and has_prof) else None,
                                 caption_entities=entities if (idx == 0 and not has_prof) else None,
-                                has_spoiler=has_spoiler
+                                has_spoiler=msg_has_spoiler
                             ))
                         elif msg.video:
                             media_group.append(InputMediaVideo(
@@ -2503,14 +2352,12 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                                 caption=censored if (idx == 0 and has_prof) else (text_caption if idx == 0 else ""),
                                 parse_mode="HTML" if (idx == 0 and has_prof) else None,
                                 caption_entities=entities if (idx == 0 and not has_prof) else None,
-                                has_spoiler=has_spoiler
+                                has_spoiler=msg_has_spoiler
                             ))
-                    
                     sent_messages = await bot.send_media_group(cfg.takes_channel, media_group)
                     db.add_take_timestamp(user_id, bid)
                     _, new_remaining, new_msg = can_send_take(user_id, bid)
-
-                    # НОВОЕ: Сохраняем альбом (с пометкой media_group)
+                    # Сохраняем альбом (с пометкой media_group)
                     if sent_messages:
                         db.save_published_take(
                             user_id=user_id,
@@ -2521,7 +2368,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                             file_ids=[msg.photo[-1].file_id if msg.photo else msg.video.file_id for msg in messages],
                             caption=(messages[0].caption if messages else None)
                         )
-                    
                     try:
                         await bot.send_message(
                             user_id,
@@ -2530,50 +2376,43 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                         )
                     except Exception:
                         pass
-                    
-                    # НОВОЕ: Отправляем админам/модераторам с кнопкой "Удалить"
+                    # Отправляем админам/модераторам с кнопкой "Удалить"
                     if sent_messages:
                         channel_msg_ids = [msg.message_id for msg in sent_messages]
                         is_blocked_flag = bool(db.get_bot_data(user_id, bid).get('is_blocked', False))
-                        
                         all_users = db.get_all_users_for_bot(bid)
                         for user in all_users:
                             mod_uid = user['user_id']
                             if check_moderator(mod_uid, bid):
                                 try:
-                                    # ИЗМЕНЕНИЕ: Отправляем альбом целиком модератору
+                                    # Отправляем альбом целиком модератору
                                     from aiogram.types import InputMediaPhoto, InputMediaVideo
-                                    
                                     mod_media_group = []
                                     for idx, msg in enumerate(messages):
                                         text_caption = msg.caption or "" if idx == 0 else ""
                                         entities = msg.caption_entities if (idx == 0 and hasattr(msg, 'caption_entities')) else None
-                                        has_spoiler = getattr(msg, 'has_media_spoiler', False)
-                                        
+                                        msg_has_spoiler = getattr(msg, 'has_media_spoiler', False)
                                         if msg.photo:
                                             mod_media_group.append(InputMediaPhoto(
                                                 media=msg.photo[-1].file_id,
                                                 caption=text_caption,
                                                 caption_entities=entities,
-                                                has_spoiler=has_spoiler
+                                                has_spoiler=msg_has_spoiler
                                             ))
                                         elif msg.video:
                                             mod_media_group.append(InputMediaVideo(
                                                 media=msg.video.file_id,
                                                 caption=text_caption,
                                                 caption_entities=entities,
-                                                has_spoiler=has_spoiler
+                                                has_spoiler=msg_has_spoiler
                                             ))
-                                    
                                     # Отправляем альбом модератору
                                     await bot.send_media_group(mod_uid, mod_media_group)
-                                    
                                     # ЗАТЕМ отправляем кнопки управления
                                     if is_blocked_flag:
                                         published_kb = build_published_take_keyboard_blocked(channel_msg_ids, user_id)
                                     else:
                                         published_kb = build_published_take_keyboard(channel_msg_ids, user_id, False)
-                                    
                                     await bot.send_message(
                                         mod_uid,
                                         f"📝 Тейк-альбом опубликован в канале ({len(messages)} медиа)",
@@ -2581,38 +2420,43 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                                     )
                                 except Exception as e:
                                     logger.error(f"Ошибка отправки модератору {mod_uid}: {e}")
-                        
                         logger.info(f"Тейк-альбом от {user_id} опубликован: {len(messages)} медиа")
-                
                 except Exception as e:
                     logger.error(f"Ошибка публикации тейка-альбома: {e}")
                     try:
                         await bot.send_message(user_id, "❌ Ошибка при отправке тейка.")
                     except Exception:
                         pass
-            
             del media_group_buffer[group_id]
-
         async def process_take_message(message: types.Message, bid: str, bot: Bot):
             """Общая логика обработки одиночного тейка."""
             uid = message.from_user.id
             register_user(message.from_user, bid)
-
             cfg = config.bots.get(bid)
             user_data = db.get_bot_data(uid, bid)
-
             # Блокировка тейков независима от блокировки объявлений
             if user_data.get('is_blocked'):
                 await message.answer("🚫 Вы заблокированы для отправки тейков.")
                 return False
-
             can_take, remaining_takes, cooldown_msg = can_send_take(uid, bid)
             if not can_take:
                 await message.answer(f"⏳ {cooldown_msg}")
                 return False
-
             text = message.text or message.caption or ""
-
+            # НОВОЕ: тейки с премиум-эмодзи никогда не публикуются в канал —
+            # бот сам собирает авто-оформленный анонимный тейк и шлёт его модераторам,
+            # с единственной доступной кнопкой блокировки автора.
+            entities_for_check = message.entities or message.caption_entities
+            if has_premium_emoji(entities_for_check):
+                await send_premium_emoji_take_to_moderators(bid, bot, uid, [message])
+                try:
+                    await message.answer(
+                        "📝 Тейк отправлен на модерацию.",
+                        reply_markup=build_main_menu(bid)
+                    )
+                except Exception:
+                    pass
+                return True
             if cfg.takes_paused:
                 take_data = {
                     'user_id': uid,
@@ -2628,37 +2472,29 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     ),
                     'timestamp': datetime.now().isoformat()
                 }
-
                 if bid not in config.paused_takes:
                     config.paused_takes[bid] = []
-
                 config.paused_takes[bid].append(take_data)
                 config.save()
                 db.add_take_timestamp(uid, bid)
-
                 await message.answer(
                     "⏸ Тейки сейчас на паузе. Ваш тейк будет отправлен когда тейки включат.",
                     reply_markup=build_main_menu(bid)
                 )
                 return True
-
             needs_moderation = cfg.manual_control
             moderation_reason = "Ручной контроль"
-
             if not needs_moderation:
                 if contains_marker_words(text, bid):
                     needs_moderation = True
                     moderation_reason = "Маркерное слово"
-
             if not needs_moderation:
                 has_group_link, link_reason = await check_telegram_links(text, bot)
                 if has_group_link:
                     needs_moderation = True
                     moderation_reason = link_reason
-
             if needs_moderation:
                 take_id = str(uuid.uuid4())[:8]
-
                 config.pending_takes[take_id] = {
                     'user_id': uid,
                     'bot_id': bid,
@@ -2676,16 +2512,12 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     )
                 }
                 config.save()
-
                 is_blocked_flag = bool(
                     db.get_bot_data(uid, bid).get('is_blocked', False)
                 )
-
                 all_users = db.get_all_users_for_bot(bid)
-
                 for user in all_users:
                     mod_uid = user['user_id']
-
                     if check_moderator(mod_uid, bid):
                         try:
                             if is_blocked_flag:
@@ -2699,42 +2531,33 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                                     uid,
                                     False
                                 )
-
                             await bot.send_message(
                                 mod_uid,
                                 f"⚠️ Тейк на модерации\n"
                                 f"Причина: {moderation_reason}\n\n{text}",
                                 reply_markup=mod_kb
                             )
-
                             await message.copy_to(mod_uid)
-
                         except Exception as e:
                             logger.error(
                                 f"Ошибка отправки модератору {mod_uid}: {e}"
                             )
-
                 await message.answer(
                     "📝 Тейк отправлен на модерацию.",
                     reply_markup=build_main_menu(bid)
                 )
                 return True
-
             else:
                 sent = await forward_take_to_channel(message, bid, bot)
-
                 if sent:
                     # Для одиночного тейка это список из одного ID.
                     # Такой же формат используется у альбомов.
                     channel_msg_ids = [sent.message_id]
-
                     # Записываем использование слота тейка один раз.
                     db.add_take_timestamp(uid, bid)
-
                     content_type = 'text'
                     file_ids = []
                     caption = message.text or message.caption or ""
-
                     if message.photo:
                         content_type = 'photo'
                         file_ids = [message.photo[-1].file_id]
@@ -2756,7 +2579,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     elif message.sticker:
                         content_type = 'sticker'
                         file_ids = [message.sticker.file_id]
-
                     # Сохраняем тейк для возможности удаления/редактирования.
                     db.save_published_take(
                         user_id=uid,
@@ -2767,28 +2589,20 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                         file_ids=file_ids,
                         caption=caption
                     )
-
                     _, new_remaining, new_msg = can_send_take(uid, bid)
-
                     await message.answer(
                         f"✅ Тейк отправлен в канал!\n📝 {new_msg}",
                         reply_markup=build_main_menu(bid)
                     )
-
                     # Отправляем опубликованный тейк модераторам вместе с кнопкой удаления.
-                    # Отправляем опубликованный тейк модераторам и отдельные кнопки.
                     is_blocked_flag = bool(
                         db.get_bot_data(uid, bid).get('is_blocked', False)
                     )
-
                     all_users = db.get_all_users_for_bot(bid)
-
                     for user in all_users:
                         mod_uid = user['user_id']
-
                         if not check_moderator(mod_uid, bid):
                             continue
-
                         try:
                             # 1. Копируем уже опубликованную версию из канала.
                             # Так модератор видит цензуру и автооформление.
@@ -2797,7 +2611,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                                 from_chat_id=cfg.takes_channel,
                                 message_id=sent.message_id
                             )
-
                             # 2. Отдельное сообщение с кнопками управления.
                             if is_blocked_flag:
                                 published_kb = build_published_take_keyboard_blocked(
@@ -2810,29 +2623,23 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                                     uid,
                                     False
                                 )
-
                             await bot.send_message(
                                 chat_id=mod_uid,
                                 text="📝 Тейк опубликован в канале",
                                 reply_markup=published_kb
                             )
-
                         except Exception as e:
                             logger.error(
                                 f"Ошибка отправки опубликованного тейка "
                                 f"модератору {mod_uid}: {e}"
                             )
-
                     return True
-
                 else:
                     await message.answer(
                         "❌ Ошибка при отправке тейка.",
                         reply_markup=build_main_menu(bid)
                     )
                     return False
-
-        
         @router.callback_query(F.data == "send_take")
         async def callback_send_take(callback: types.CallbackQuery, state: FSMContext):
             user_data = db.get_bot_data(callback.from_user.id, bot_id)
@@ -2853,19 +2660,16 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             )
             await state.set_state(TakeStates.WaitingTake)
             await callback.answer()
-
         @router.message(TakeStates.WaitingTake, F.media_group_id)
         async def process_take_from_button_media_group(message: types.Message, state: FSMContext):
             """Обработка медиагруппы тейка из состояния."""
             group_id = f"take_{message.media_group_id}"
             text = message.text or message.caption or ""
-            
             # Проверяем #тейк только у первого сообщения, остальные просто добавляем в буфер
             if group_id not in media_group_buffer and "#тейк" not in text.lower():
                 await message.answer("⚠️ Добавьте #тейк в сообщение!", reply_markup=build_cancel_keyboard())
                 return
             await handle_take_media_group(message, bot_id, bot_instance, state)
-
         @router.message(TakeStates.WaitingTake)
         async def process_take_from_button(message: types.Message, state: FSMContext):
             """Обработка одиночного тейка из состояния."""
@@ -2875,42 +2679,32 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 return
             await process_take_message(message, bot_id, bot_instance)
             await state.clear()
-
         @router.message(F.media_group_id)
         async def auto_forward_take_media_group(message: types.Message, state: FSMContext):
             """Автоматическая обработка медиагруппы (альбома)."""
             if message.chat.type in ("channel", "group", "supergroup"):
                 return
-    
             current_state = await state.get_state()
-    
-            # НОВОЕ: Пропускаем если идёт редактирование или ожидание тейка
+            # Пропускаем если идёт редактирование или ожидание тейка
             if current_state in (TakeStates.WaitingEdit, TakeStates.WaitingTake):
                 return
-    
             group_id = f"take_{message.media_group_id}"
             text = message.text or message.caption or ""
-    
             if "#тейк" in text.lower() or group_id in media_group_buffer:
                 await handle_take_media_group(message, bot_id, bot_instance, state)
-
         # =================== АВТОМАТИЧЕСКИЙ ПЕРЕХВАТ ТЕЙКОВ ===================
         # Этот хэндлер ловит сообщения с хэштегом, если пользователь просто пишет в бота
         @router.message(
-            (F.text.contains("#тейк") | F.caption.contains("#тейк")), 
-            StateFilter(None) # <--- ВАЖНО: срабатывает только если пользователь не в режиме правки
+            (F.text.contains("#тейк") | F.caption.contains("#тейк")),
+            StateFilter(None)  # <--- ВАЖНО: срабатывает только если пользователь не в режиме правки
         )
         async def auto_forward_take(message: types.Message, state: FSMContext):
             """Автоматическая обработка одиночного сообщения с хэштегом."""
             if message.chat.type in ("channel", "group", "supergroup"):
                 return
-                
             # Просто вызываем вашу функцию обработки
             await process_take_message(message, bot_id, bot_instance)
-
         # ======================================================================
-
-    
         @router.callback_query(F.data.startswith("take_approve_"))
         async def take_approve(callback: types.CallbackQuery):
             """Одобрение тейка модератором (Премиум-эмодзи + Кнопки удаления + Фикс лимитов)."""
@@ -2919,22 +2713,19 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             if not take_data:
                 await callback.answer("Тейк не найден (возможно, уже одобрен).", show_alert=True)
                 return
-
             cfg = config.bots.get(take_data['bot_id'])
-            bot_id = take_data['bot_id']
+            take_bot_id = take_data['bot_id']
             user_id = take_data['user_id']
-
             try:
                 # Вспомогательная функция для текста
                 def get_processed_text(input_text: str) -> Tuple[str, bool]:
                     if not input_text: return "", False
-                    if bot_id == "main" and "#тейк" in input_text.lower():
+                    if take_bot_id == "main" and "#тейк" in input_text.lower():
                         import re as re_module
                         pattern = re_module.compile(r'(#тейк)', re_module.IGNORECASE)
                         input_text = pattern.sub(r'\1\n★@Wings_teyk_bot ; @Wings_of_fire_CF★', input_text, count=1)
-                    censored, has_prof = censor_profanity(input_text, bot_id)
+                    censored, has_prof = censor_profanity(input_text, take_bot_id)
                     return censored, has_prof
-
                 # --- ЛОГИКА ДЛЯ АЛЬБОМОВ ---
                 if take_data.get('type') == 'take_media_group':
                     from aiogram.types import InputMediaPhoto, InputMediaVideo
@@ -2943,15 +2734,14 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                         raw_cap = m_info.get('caption', '') if idx == 0 else ""
                         entities = restore_entities(m_info.get('caption_entities')) if idx == 0 else None
                         proc_cap, has_prof = get_processed_text(raw_cap)
-                        has_spoiler = m_info.get('has_spoiler', False)
-
+                        msg_has_spoiler = m_info.get('has_spoiler', False)
                         if m_info.get('photo'):
                             media_group.append(InputMediaPhoto(
                                 media=m_info['photo'],
                                 caption=proc_cap if has_prof else raw_cap,
                                 parse_mode="HTML" if has_prof else None,
                                 caption_entities=None if has_prof else entities,
-                                has_spoiler=has_spoiler
+                                has_spoiler=msg_has_spoiler
                             ))
                         elif m_info.get('video'):
                             media_group.append(InputMediaVideo(
@@ -2959,29 +2749,25 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                                 caption=proc_cap if has_prof else raw_cap,
                                 parse_mode="HTML" if has_prof else None,
                                 caption_entities=None if has_prof else entities,
-                                has_spoiler=has_spoiler
+                                has_spoiler=msg_has_spoiler
                             ))
-                    
                     sent_msgs = await bot_instance.send_media_group(cfg.takes_channel, media_group)
-                    msg_ids_str = ",".join([str(m.message_id) for m in sent_msgs])
-                    
+                    # ИСПРАВЛЕНИЕ: раньше сюда передавалась строка вместо списка ID, что ломало callback_data
+                    channel_msg_ids = [m.message_id for m in sent_msgs]
                     # Кнопки для модератора
-                    is_blocked_flag = bool(db.get_bot_data(user_id, bot_id).get('is_blocked', False))
-                    pub_kb = build_published_take_keyboard(msg_ids_str, user_id, is_blocked_flag)
+                    is_blocked_flag = bool(db.get_bot_data(user_id, take_bot_id).get('is_blocked', False))
+                    pub_kb = build_published_take_keyboard(channel_msg_ids, user_id, is_blocked_flag)
                     await callback.message.edit_text("✅ Альбом опубликован.", reply_markup=pub_kb)
-
                 # --- ЛОГИКА ДЛЯ ОДИНОЧНЫХ ---
                 else:
                     raw_text = take_data.get('caption') or take_data.get('text', '')
                     entities = restore_entities(take_data.get('caption_entities'))
                     proc_text, has_prof = get_processed_text(raw_text)
-
                     send_kwargs = {
                         "caption": proc_text if has_prof else raw_text,
                         "parse_mode": "HTML" if has_prof else None,
                         "caption_entities": None if has_prof else entities
                     }
-
                     sent = None
                     if take_data.get('photo'):
                         sent = await bot_instance.send_photo(cfg.takes_channel, photo=take_data['photo'], **send_kwargs)
@@ -3000,29 +2786,24 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     else:
                         text_to_send = proc_text if has_prof else raw_text
                         sent = await bot_instance.send_message(
-                            cfg.takes_channel, text=text_to_send, 
+                            cfg.takes_channel, text=text_to_send,
                             parse_mode="HTML" if has_prof else None,
                             entities=None if has_prof else entities
                         )
-
                     if sent:
-                        is_blocked_flag = bool(db.get_bot_data(user_id, bot_id).get('is_blocked', False))
-                        pub_kb = build_published_take_keyboard(str(sent.message_id), user_id, is_blocked_flag)
+                        is_blocked_flag = bool(db.get_bot_data(user_id, take_bot_id).get('is_blocked', False))
+                        # ИСПРАВЛЕНИЕ: передаём список ID, а не строку
+                        pub_kb = build_published_take_keyboard([sent.message_id], user_id, is_blocked_flag)
                         await callback.message.edit_text("✅ Тейк опубликован.", reply_markup=pub_kb)
-
-                # ИСПРАВЛЕНИЕ: Удалили db.add_take_timestamp (он уже сработал при отправке)
                 del config.pending_takes[take_id]
                 config.save()
-                
                 try:
                     await bot_instance.send_message(user_id, "✅ Ваш тейк одобрен и опубликован!")
                 except: pass
-
             except Exception as e:
                 logger.error(f"Ошибка одобрения: {e}")
                 await callback.answer(f"Ошибка: {e}", show_alert=True)
             await callback.answer()
-
         @router.callback_query(F.data.startswith("take_reject_"))
         async def take_reject(callback: types.CallbackQuery):
             take_id = callback.data[12:]
@@ -3036,23 +2817,19 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 config.save()
             await callback.message.edit_text("❌ Тейк отклонён.")
             await callback.answer()
-
         @router.callback_query(F.data.startswith("take_delete_"))
         async def take_delete_from_channel(callback: types.CallbackQuery):
             """Удаление уже опубликованного тейка из канала (включая медиагруппы)."""
             if not check_moderator(callback.from_user.id, bot_id):
                 await callback.answer("Нет доступа", show_alert=True)
                 return
-            
-            # ИЗМЕНЕНИЕ: Парсим список ID через запятую
+            # Парсим список ID через запятую
             msg_ids_str = callback.data[12:]  # Получаем "123,124,125"
             channel_msg_ids = [int(x) for x in msg_ids_str.split(",")]  # Преобразуем в список
-            
             cfg = config.bots.get(bot_id)
             deleted_count = 0
             errors = []
-            
-            # ИЗМЕНЕНИЕ: Удаляем ВСЕ сообщения из списка
+            # Удаляем ВСЕ сообщения из списка
             for msg_id in channel_msg_ids:
                 try:
                     await bot_instance.delete_message(cfg.takes_channel, msg_id)
@@ -3061,16 +2838,13 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 except Exception as e:
                     logger.error(f"Ошибка удаления тейка {msg_id}: {e}")
                     errors.append(str(e))
-            
             if deleted_count == len(channel_msg_ids):
                 await callback.message.edit_text(f"✅ Удалено {deleted_count} сообщений из канала.")
             else:
                 await callback.message.edit_text(
                     f"⚠️ Удалено {deleted_count} из {len(channel_msg_ids)} сообщений.\nОшибки: {', '.join(errors)}"
                 )
-            
             await callback.answer()
-    
         @router.callback_query(F.data.startswith("user_block_"))
         async def block_user_from_takes(callback: types.CallbackQuery):
             """Блокировка пользователя для тейков."""
@@ -3085,17 +2859,11 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 pass
             try:
                 await callback.message.edit_reply_markup(
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(
-                            text="🔓 Разблокировать (тейки)",
-                            callback_data=f"take_unblock_{uid}"
-                        )]
-                    ])
+                    reply_markup=build_premium_take_keyboard(uid, True)
                 )
             except Exception:
                 pass
             await callback.answer("🚫 Заблокирован для тейков", show_alert=True)
-
         @router.callback_query(F.data.startswith("take_unblock_"))
         async def unblock_user_from_takes(callback: types.CallbackQuery):
             """Разблокировка пользователя для тейков."""
@@ -3110,17 +2878,11 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 pass
             try:
                 await callback.message.edit_reply_markup(
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(
-                            text="🚫 Заблокировать (тейки)",
-                            callback_data=f"user_block_{uid}"
-                        )]
-                    ])
+                    reply_markup=build_premium_take_keyboard(uid, False)
                 )
             except Exception:
                 pass
             await callback.answer("✅ Разблокирован для тейков", show_alert=True)
-
         @router.callback_query(F.data.startswith("user_unblock_"))
         async def unblock_user_legacy(callback: types.CallbackQuery):
             """Разблокировка тейков — устаревший формат для обратной совместимости."""
@@ -3135,28 +2897,19 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 pass
             try:
                 await callback.message.edit_reply_markup(
-                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                        [InlineKeyboardButton(
-                            text="🚫 Заблокировать (тейки)",
-                            callback_data=f"user_block_{uid}"
-                        )]
-                    ])
+                    reply_markup=build_premium_take_keyboard(uid, False)
                 )
             except Exception:
                 pass
             await callback.answer("✅ Разблокирован для тейков", show_alert=True)
-
         # =================== РЕДАКТИРОВАНИЕ ТЕЙКОВ ===================
-
     @router.callback_query(F.data == "my_takes")
     async def callback_my_takes(callback: types.CallbackQuery):
         """Показать список тейков для редактирования."""
         recent_takes = db.get_user_recent_takes(callback.from_user.id, bot_id, hours=24)
-        
         if not recent_takes:
             await callback.answer("📝 У вас нет опубликованных тейков за последние 24 часа", show_alert=True)
             return
-        
         builder = InlineKeyboardBuilder()
         for take in recent_takes[:5]:  # Показываем до 5 последних
             time_ago = datetime.now() - datetime.fromisoformat(take['published_at'])
@@ -3164,43 +2917,33 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             caption_preview = (take['caption'] or "Без текста")[:30]
             if len(take['caption'] or "") > 30:
                 caption_preview += "..."
-            
             builder.row(InlineKeyboardButton(
                 text=f"📝 {caption_preview} ({hours}ч назад)",
                 callback_data=f"show_take_{take['id']}"
             ))
-        
         builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="back_main"))
-        
         await callback.message.edit_text(
             "Ваши последние тейки:\n\n⏰ Доступно редактирование в течение 24 часов",
             reply_markup=builder.as_markup()
         )
         await callback.answer()
-
     @router.callback_query(F.data.startswith("show_take_"))
     async def show_take_options(callback: types.CallbackQuery):
         """Показать опции для тейка (редактировать/удалить)."""
         take_id = int(callback.data[10:])
-    
         try:
             take = db.supabase.table('published_takes').select('*').eq('id', take_id).execute()
             if not take.data:
                 await callback.answer("Тейк не найден", show_alert=True)
                 return
-        
             take_data = take.data[0]
-        
             # Проверяем срок
             published = datetime.fromisoformat(take_data['published_at'])
             hours_ago = (datetime.now() - published).total_seconds() / 3600
-        
             if hours_ago > 24:
                 await callback.answer("⏰ Срок редактирования истёк (24 часа)", show_alert=True)
                 return
-        
             builder = InlineKeyboardBuilder()
-        
             # Кнопка редактирования (только для НЕ медиагрупп)
             if take_data['content_type'] != 'media_group':
                 builder.row(InlineKeyboardButton(
@@ -3212,54 +2955,43 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     text="⚠️ Альбомы нельзя редактировать",
                     callback_data="noop"
                 ))
-        
-            # НОВОЕ: Показываем количество медиа для альбомов
+            # Показываем количество медиа для альбомов
             msg_count = len(take_data.get('channel_message_ids', []))
             delete_text = f"🗑 Удалить из канала ({msg_count} медиа)" if msg_count > 1 else "🗑 Удалить из канала"
-        
             builder.row(InlineKeyboardButton(
                 text=delete_text,
                 callback_data=f"delete_my_take_{take_id}"
             ))
             builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="my_takes"))
-            
             caption_text = take_data.get('caption', 'Без текста')[:100]
             type_text = "Альбом" if take_data['content_type'] == 'media_group' else "Одиночный"
-        
             await callback.message.edit_text(
                 f"📝 Тейк ({type_text}):\n{caption_text}\n\n"
                 f"⏰ Опубликован {int(hours_ago)}ч назад\n"
                 f"📊 Медиа: {msg_count}",
                 reply_markup=builder.as_markup()
             )
-        
         except Exception as e:
             logger.error(f"Ошибка показа опций тейка: {e}")
             await callback.answer("Ошибка", show_alert=True)
         await callback.answer()
-
     @router.callback_query(F.data.startswith("edit_take_"))
     async def edit_take_start(callback: types.CallbackQuery, state: FSMContext):
         """Начать редактирование тейка."""
         take_id = int(callback.data[10:])
-        
         try:
             take = db.supabase.table('published_takes').select('*').eq('id', take_id).execute()
             if not take.data:
                 await callback.answer("Тейк не найден", show_alert=True)
                 return
-            
             take_data = take.data[0]
-            
             # Проверяем срок
             published = datetime.fromisoformat(take_data['published_at'])
             if datetime.now() - published > timedelta(hours=24):
                 await callback.answer("⏰ Срок редактирования истёк (24 часа)", show_alert=True)
                 return
-            
             # Сохраняем данные
             await state.update_data(edit_take_id=take_id, take_data=take_data)
-            
             current_text = take_data.get('caption', 'Без текста')[:100]
             await callback.message.edit_text(
                 f"✏️ Отправьте новый вариант тейка\n\n"
@@ -3272,27 +3004,21 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 reply_markup=build_cancel_keyboard()
             )
             await state.set_state(TakeStates.WaitingEdit)
-            
         except Exception as e:
             logger.error(f"Ошибка начала редактирования: {e}")
             await callback.answer("Ошибка", show_alert=True)
         await callback.answer()
-
     @router.message(TakeStates.WaitingEdit)
     async def process_edit_take(message: types.Message, state: FSMContext):
         """Обработка нового варианта тейка."""
         logger.info(f"✏️ РЕДАКТИРОВАНИЕ началось для пользователя {message.from_user.id}")
         logger.info(f"📝 Текст сообщения: {(message.text or message.caption or '')[:100]}")
-        
-        """Обработка нового варианта тейка."""
         data = await state.get_data()
         take_data = data['take_data']
-        
         try:
             cfg = config.bots.get(bot_id)
             chat_id = take_data['chat_id']
             msg_id = take_data['channel_message_ids'][0]  # Первое ID из списка
-            
             # Проверяем тип
             if take_data['content_type'] == 'media_group':
                 await message.answer(
@@ -3302,34 +3028,28 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 )
                 await state.clear()
                 return
-            
             from aiogram.types import InputMediaPhoto, InputMediaVideo, InputMediaAnimation
-            
             new_type = None
             new_file_ids = []
             new_caption = message.text or message.caption or ""
-            
-            # НОВОЕ: Проверяем наличие #тейк
+            # Проверяем наличие #тейк
             if "#тейк" not in new_caption.lower():
                 await message.answer(
                     "⚠️ Добавьте хештег #тейк в сообщение!",
                     reply_markup=build_cancel_keyboard()
                 )
                 return
-            
-            # НОВОЕ: Добавляем автооформление для главного бота
+            # Добавляем автооформление для главного бота
             if bot_id == "main" and new_caption:
                 import re as re_module
                 pattern = re_module.compile(r'(#тейк)', re_module.IGNORECASE)
                 new_caption = pattern.sub(
-                    r'\1\n★@Wings_teyk_bot ; @Wings_of_fire_CF★', 
-                    new_caption, 
+                    r'\1\n★@Wings_teyk_bot ; @Wings_of_fire_CF★',
+                    new_caption,
                     count=1
                 )
-            
-            # НОВОЕ: Применяем цензуру
+            # Применяем цензуру
             censored_caption, has_profanity = censor_profanity(new_caption, bot_id)
-            
             if message.photo:
                 await bot_instance.edit_message_media(
                     chat_id=chat_id,
@@ -3343,7 +3063,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 )
                 new_type = 'photo'
                 new_file_ids = [message.photo[-1].file_id]
-                
             elif message.video:
                 await bot_instance.edit_message_media(
                     chat_id=chat_id,
@@ -3357,7 +3076,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 )
                 new_type = 'video'
                 new_file_ids = [message.video.file_id]
-                
             elif message.animation:
                 await bot_instance.edit_message_media(
                     chat_id=chat_id,
@@ -3370,7 +3088,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 )
                 new_type = 'animation'
                 new_file_ids = [message.animation.file_id]
-                
             elif message.text:
                 if take_data['content_type'] == 'text':
                     await bot_instance.edit_message_text(
@@ -3394,7 +3111,6 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     reply_markup=build_cancel_keyboard()
                 )
                 return
-            
             # Обновляем в БД (сохраняем оригинальный текст без автооформления)
             db.supabase.table('published_takes').update({
                 'content_type': new_type,
@@ -3402,18 +3118,15 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 'caption': message.text or message.caption or "",
                 'edited_at': datetime.now().isoformat()
             }).eq('id', data['edit_take_id']).execute()
-            
             await message.answer(
                 "✅ Тейк успешно обновлён в канале!",
                 reply_markup=build_main_menu(bot_id)
             )
             logger.info(f"✏️ Пользователь {message.from_user.id} отредактировал тейк {msg_id}")
-            
         except Exception as e:
             logger.error(f"❌ Ошибка редактирования: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            
             await message.answer(
                 f"❌ Не удалось обновить тейк:\n{str(e)}\n\n"
                 f"Возможно:\n"
@@ -3422,28 +3135,22 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 f"• Сообщение было удалено",
                 reply_markup=build_main_menu(bot_id)
             )
-        
         await state.clear()
-
     @router.callback_query(F.data.startswith("delete_my_take_"))
     async def delete_my_take(callback: types.CallbackQuery):
         """Удалить тейк из канала и БД (включая все медиа из альбома)."""
         take_id = int(callback.data[15:])
-    
         try:
             take = db.supabase.table('published_takes').select('*').eq('id', take_id).execute()
             if not take.data:
                 await callback.answer("Тейк не найден", show_alert=True)
                 return
-        
             take_data = take.data[0]
             cfg = config.bots.get(bot_id)
-        
-            # НОВОЕ: Удаляем ВСЕ сообщения из списка
+            # Удаляем ВСЕ сообщения из списка
             channel_msg_ids = take_data.get('channel_message_ids', [])
             deleted_count = 0
             errors = []
-        
             for msg_id in channel_msg_ids:
                 try:
                     await bot_instance.delete_message(
@@ -3455,10 +3162,8 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 except Exception as e:
                     logger.warning(f"Не удалось удалить {msg_id}: {e}")
                     errors.append(str(e))
-        
             # Удаляем из БД
             db.delete_published_take(take_id)
-        
             if deleted_count == len(channel_msg_ids):
                 await callback.message.edit_text(
                     f"✅ Тейк удалён из канала ({deleted_count} сообщений)",
@@ -3470,36 +3175,32 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     f"Ошибки: {', '.join(errors[:3])}",
                     reply_markup=build_main_menu(bot_id)
                 )
-        
             logger.info(f"🗑️ Пользователь {callback.from_user.id} удалил свой тейк {take_id}")
-        
         except Exception as e:
             logger.error(f"Ошибка удаления тейка: {e}")
             await callback.answer("Ошибка удаления", show_alert=True)
         await callback.answer()
-
     dp.include_router(router)
-
 def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
-    """Обработчики магазина, пиара, админ-панели и канала."""
+    """Обработчики шопа (легаси автопост), пиара, админ-панели и канала.
+    Кнопка/функция "Магазин" (покупка товара за валюту) полностью удалена
+    по требованию — вместе с ней удалены все связанные обработчики и состояние.
+    """
     # Создаём роутер с уникальным именем
     router = Router(name=f"shop_admin_{bot_id}_{id(dp)}")
     bot_config = config.bots.get(bot_id)
-
-    # =================== МАГАЗИН / ПИАР ===================
-
+    # =================== ЛЕГАСИ: АВТОПОСТ ПО ХЭШТЕГАМ В ШОП-КАНАЛ ===================
     if bot_config and "shop" in bot_config.modules:
-
-        @router.callback_query(F.data == "shop")
-        async def callback_shop(callback: types.CallbackQuery):
-            await callback.message.edit_text("🛒 Магазин:", reply_markup=build_shop_menu(bot_id))
-            await callback.answer()
-
         @router.message(
             F.text.contains("#продажа") | F.caption.contains("#продажа") |
             F.text.contains("#обмен") | F.caption.contains("#обмен")
         )
         async def auto_forward_shop(message: types.Message, state: FSMContext):
+            """
+            Анонимная автопересылка в шоп-канал по хэштегам #продажа/#обмен.
+            ИСПРАВЛЕНО: теперь сохраняются entities (в т.ч. премиум-эмодзи и форматирование),
+            а также поддерживается видео (раньше для видео подпись терялась).
+            """
             # Только личные чаты — не каналы и не группы
             if message.chat.type in ("channel", "group", "supergroup"):
                 return
@@ -3510,126 +3211,24 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             try:
                 if message.photo:
                     await bot_instance.send_photo(
-                        cfg.shop_channel, photo=message.photo[-1].file_id, caption=message.caption
+                        cfg.shop_channel, photo=message.photo[-1].file_id,
+                        caption=message.caption, caption_entities=message.caption_entities,
+                        has_spoiler=getattr(message, 'has_media_spoiler', False)
+                    )
+                elif message.video:
+                    await bot_instance.send_video(
+                        cfg.shop_channel, video=message.video.file_id,
+                        caption=message.caption, caption_entities=message.caption_entities,
+                        has_spoiler=getattr(message, 'has_media_spoiler', False)
                     )
                 else:
-                    await bot_instance.send_message(cfg.shop_channel, message.text)
+                    await bot_instance.send_message(
+                        cfg.shop_channel, message.text, entities=message.entities
+                    )
                 await message.answer("✅ Объявление отправлено!")
             except Exception as e:
                 logger.error(f"Ошибка автопересылки: {e}")
-
-
-        @router.callback_query(F.data == "buy_product")
-        async def callback_buy_product(callback: types.CallbackQuery, state: FSMContext):
-            await callback.message.edit_text("🛍 Отправьте фото товара:", reply_markup=build_cancel_keyboard())
-            await state.set_state(PurchaseStates.WaitingImage)
-            await callback.answer()
-
-        @router.message(PurchaseStates.WaitingImage)
-        async def buy_image(message: types.Message, state: FSMContext):
-            if not message.photo:
-                await message.answer("Нужно отправить фото.", reply_markup=build_cancel_keyboard())
-                return
-            await state.update_data(photo_id=message.photo[-1].file_id)
-            await message.answer("Введите username или ID продавца:", reply_markup=build_cancel_keyboard())
-            await state.set_state(PurchaseStates.WaitingSeller)
-
-        @router.message(PurchaseStates.WaitingSeller)
-        async def buy_seller(message: types.Message, state: FSMContext):
-            seller_id = db.find_user_by_input(message.text)
-            if not seller_id:
-                await message.answer("Продавец не найден.", reply_markup=build_cancel_keyboard())
-                return
-            if seller_id == message.from_user.id:
-                await message.answer("Нельзя купить у себя.", reply_markup=build_cancel_keyboard())
-                return
-            await state.update_data(seller_id=seller_id)
-            await message.answer("Введите сумму оплаты:", reply_markup=build_cancel_keyboard())
-            await state.set_state(PurchaseStates.WaitingAmount)
-
-        @router.message(PurchaseStates.WaitingAmount)
-        async def buy_amount(message: types.Message, state: FSMContext):
-            try:
-                amount = float(message.text)
-                if amount <= 0:
-                    raise ValueError
-            except ValueError:
-                await message.answer("Введите корректную сумму.", reply_markup=build_cancel_keyboard())
-                return
-
-            data = await state.get_data()
-            purchase_id = str(uuid.uuid4())[:8]
-            buyer = db.get_user(message.from_user.id)
-            config.pending_purchases[purchase_id] = {
-                'buyer_id': message.from_user.id, 'seller_id': data['seller_id'],
-                'amount': amount, 'photo_id': data['photo_id'], 'bot_id': bot_id
-            }
-            config.save()
-            cfg = config.bots.get(bot_id)
-            confirm_kb = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"purchase_ok_{purchase_id}"),
-                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"purchase_no_{purchase_id}")
-            ]])
-            try:
-                await bot_instance.send_photo(
-                    data['seller_id'], photo=data['photo_id'],
-                    caption=f"🛒 Запрос покупки!\nОт: @{buyer['username']}\nСумма: {amount} {cfg.currency_emoji}",
-                    reply_markup=confirm_kb
-                )
-                await message.answer("✅ Запрос отправлен продавцу!", reply_markup=build_main_menu(bot_id))
-            except Exception:
-                del config.pending_purchases[purchase_id]
-                config.save()
-                await message.answer("❌ Не удалось связаться с продавцом.", reply_markup=build_main_menu(bot_id))
-            await state.clear()
-
-        @router.callback_query(F.data.startswith("purchase_ok_"))
-        async def purchase_confirm(callback: types.CallbackQuery):
-            purchase_id = callback.data[12:]
-            purchase = config.pending_purchases.get(purchase_id)
-            if not purchase:
-                await callback.answer("Покупка не найдена", show_alert=True)
-                return
-            if callback.from_user.id != purchase['seller_id']:
-                await callback.answer("Это не ваша продажа", show_alert=True)
-                return
-            cfg = config.bots.get(purchase['bot_id'])
-            success, error = do_transfer(
-                purchase['buyer_id'], purchase['seller_id'], purchase['bot_id'], purchase['amount']
-            )
-            if success:
-                await callback.message.edit_caption(
-                    caption=f"✅ Продано! +{purchase['amount']} {cfg.currency_emoji}"
-                )
-                try:
-                    await bot_instance.send_message(
-                        purchase['buyer_id'],
-                        f"✅ Покупка подтверждена! -{purchase['amount']} {cfg.currency_emoji}"
-                    )
-                except Exception:
-                    pass
-            else:
-                await callback.answer(error, show_alert=True)
-            del config.pending_purchases[purchase_id]
-            config.save()
-            await callback.answer()
-
-        @router.callback_query(F.data.startswith("purchase_no_"))
-        async def purchase_reject(callback: types.CallbackQuery):
-            purchase_id = callback.data[12:]
-            purchase = config.pending_purchases.get(purchase_id)
-            if purchase:
-                try:
-                    await bot_instance.send_message(purchase['buyer_id'], "❌ Покупка отклонена продавцом.")
-                except Exception:
-                    pass
-                del config.pending_purchases[purchase_id]
-                config.save()
-            await callback.message.edit_caption(caption="❌ Продажа отклонена")
-            await callback.answer()
-
     # =================== АДМИН-ПАНЕЛЬ ===================
-
     @router.callback_query(F.data == "adm_users")
     async def admin_users_list(callback: types.CallbackQuery):
         if not check_admin(callback.from_user.id, bot_id):
@@ -3651,7 +3250,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         text += "\n🚫т — заблок.тейки, 🚫о — заблок.объявления"
         await callback.message.edit_text(text, reply_markup=build_admin_menu(callback.from_user.id, bot_id))
         await callback.answer()
-
     @router.callback_query(F.data == "adm_deduct")
     async def admin_deduct_start(callback: types.CallbackQuery, state: FSMContext):
         if not check_owner(callback.from_user.id, bot_id):
@@ -3660,7 +3258,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         await callback.message.edit_text("Введите username для списания:", reply_markup=build_cancel_keyboard())
         await state.set_state(AdminStates.WaitingUsernameForDeduct)
         await callback.answer()
-
     @router.message(AdminStates.WaitingUsernameForDeduct)
     async def admin_deduct_username(message: types.Message, state: FSMContext):
         uid = db.find_user_by_input(message.text)
@@ -3675,7 +3272,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             reply_markup=build_cancel_keyboard()
         )
         await state.set_state(AdminStates.WaitingAmountForDeduct)
-
     @router.message(AdminStates.WaitingAmountForDeduct)
     async def admin_deduct_amount(message: types.Message, state: FSMContext):
         try:
@@ -3693,7 +3289,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         else:
             await message.answer("❌ Ошибка списания.", reply_markup=build_admin_menu(message.from_user.id, bot_id))
         await state.clear()
-
     @router.callback_query(F.data == "adm_freeze")
     async def admin_freeze_start(callback: types.CallbackQuery, state: FSMContext):
         if not check_owner(callback.from_user.id, bot_id):
@@ -3702,7 +3297,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         await callback.message.edit_text("Введите username для заморозки:", reply_markup=build_cancel_keyboard())
         await state.set_state(AdminStates.WaitingUsernameForFreeze)
         await callback.answer()
-
     @router.message(AdminStates.WaitingUsernameForFreeze)
     async def admin_freeze_process(message: types.Message, state: FSMContext):
         uid = db.find_user_by_input(message.text)
@@ -3712,7 +3306,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         else:
             await message.answer("Пользователь не найден.", reply_markup=build_cancel_keyboard())
         await state.clear()
-
     @router.callback_query(F.data == "adm_unfreeze")
     async def admin_unfreeze_start(callback: types.CallbackQuery, state: FSMContext):
         if not check_owner(callback.from_user.id, bot_id):
@@ -3721,7 +3314,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         await callback.message.edit_text("Введите username для разморозки:", reply_markup=build_cancel_keyboard())
         await state.set_state(AdminStates.WaitingUsernameForUnfreeze)
         await callback.answer()
-
     @router.message(AdminStates.WaitingUsernameForUnfreeze)
     async def admin_unfreeze_process(message: types.Message, state: FSMContext):
         uid = db.find_user_by_input(message.text)
@@ -3731,7 +3323,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         else:
             await message.answer("Пользователь не найден.", reply_markup=build_cancel_keyboard())
         await state.clear()
-
     @router.callback_query(F.data == "adm_toggle_takes")
     async def admin_toggle_takes(callback: types.CallbackQuery):
         if not check_owner(callback.from_user.id, bot_id):
@@ -3778,7 +3369,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             config.save()
             await callback.answer("⏸ Тейки поставлены на паузу", show_alert=True)
         await callback.message.edit_text("Админ-панель:", reply_markup=build_admin_menu(callback.from_user.id, bot_id))
-
     @router.callback_query(F.data == "adm_toggle_manual")
     async def admin_toggle_manual(callback: types.CallbackQuery):
         if not check_owner(callback.from_user.id, bot_id):
@@ -3790,7 +3380,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         status = "🔒 Ручной контроль включён" if cfg.manual_control else "🔓 Авто-контроль включён"
         await callback.answer(status, show_alert=True)
         await callback.message.edit_text("Админ-панель:", reply_markup=build_admin_menu(callback.from_user.id, bot_id))
-
     @router.callback_query(F.data == "adm_channel_quiz")
     async def admin_channel_quiz_start(callback: types.CallbackQuery, state: FSMContext):
         if not check_admin(callback.from_user.id, bot_id):
@@ -3802,7 +3391,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         )
         await state.set_state(AdminStates.WaitingQuizQuestion)
         await callback.answer()
-
     @router.message(AdminStates.WaitingQuizQuestion)
     async def admin_quiz_question(message: types.Message, state: FSMContext):
         quiz_data = {
@@ -3813,7 +3401,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         await state.update_data(quiz_data=quiz_data)
         await message.answer("Укажите награду (число валюты):", reply_markup=build_cancel_keyboard())
         await state.set_state(AdminStates.WaitingQuizReward)
-
     @router.message(AdminStates.WaitingQuizReward)
     async def admin_quiz_reward(message: types.Message, state: FSMContext):
         try:
@@ -3826,7 +3413,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         await state.update_data(quiz_reward=reward)
         await message.answer("Введите правильный ответ:", reply_markup=build_cancel_keyboard())
         await state.set_state(AdminStates.WaitingQuizAnswer)
-
     @router.message(AdminStates.WaitingQuizAnswer)
     async def admin_quiz_answer(message: types.Message, state: FSMContext):
         data = await state.get_data()
@@ -3859,9 +3445,7 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         except Exception as e:
             await message.answer(f"❌ Ошибка: {e}", reply_markup=build_admin_menu(message.from_user.id, bot_id))
         await state.clear()
-
     # =================== ЦЕНЗУРА ===================
-
     @router.callback_query(F.data == "adm_censor")
     async def admin_censor_menu(callback: types.CallbackQuery):
         if not check_admin(callback.from_user.id, bot_id):
@@ -3872,13 +3456,11 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             reply_markup=build_censor_menu()
         )
         await callback.answer()
-
     @router.callback_query(F.data == "censor_add")
     async def censor_add_start(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.edit_text("Введите слово/корень:", reply_markup=build_cancel_keyboard())
         await state.set_state(AdminStates.WaitingCensorWord)
         await callback.answer()
-
     @router.message(AdminStates.WaitingCensorWord)
     async def censor_add_process(message: types.Message, state: FSMContext):
         word = message.text.strip().lower()
@@ -3888,7 +3470,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             config.save()
         await message.answer(f"✅ Слово '{word}' добавлено.", reply_markup=build_censor_menu())
         await state.clear()
-
     @router.callback_query(F.data == "censor_del")
     async def censor_del_start(callback: types.CallbackQuery, state: FSMContext):
         cfg = config.bots.get(bot_id)
@@ -3901,7 +3482,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         )
         await state.set_state(AdminStates.WaitingRemoveCensorWord)
         await callback.answer()
-
     @router.message(AdminStates.WaitingRemoveCensorWord)
     async def censor_del_process(message: types.Message, state: FSMContext):
         word = message.text.strip().lower()
@@ -3913,13 +3493,11 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         else:
             await message.answer("Слово не найдено.", reply_markup=build_censor_menu())
         await state.clear()
-
     @router.callback_query(F.data == "marker_add")
     async def marker_add_start(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.edit_text("Введите маркер:", reply_markup=build_cancel_keyboard())
         await state.set_state(AdminStates.WaitingMarkerWord)
         await callback.answer()
-
     @router.message(AdminStates.WaitingMarkerWord)
     async def marker_add_process(message: types.Message, state: FSMContext):
         word = message.text.strip().lower()
@@ -3929,7 +3507,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             config.save()
         await message.answer(f"✅ Маркер '{word}' добавлен.", reply_markup=build_censor_menu())
         await state.clear()
-
     @router.callback_query(F.data == "marker_del")
     async def marker_del_start(callback: types.CallbackQuery, state: FSMContext):
         cfg = config.bots.get(bot_id)
@@ -3942,7 +3519,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         )
         await state.set_state(AdminStates.WaitingRemoveMarkerWord)
         await callback.answer()
-
     @router.message(AdminStates.WaitingRemoveMarkerWord)
     async def marker_del_process(message: types.Message, state: FSMContext):
         word = message.text.strip().lower()
@@ -3954,7 +3530,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         else:
             await message.answer("Маркер не найден.", reply_markup=build_censor_menu())
         await state.clear()
-
     @router.callback_query(F.data == "censor_list")
     async def censor_list_show(callback: types.CallbackQuery):
         cfg = config.bots.get(bot_id)
@@ -3967,9 +3542,7 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             reply_markup=build_censor_menu()
         )
         await callback.answer()
-
     # =================== МОДЕРАТОРЫ ТЕЙКОВ ===================
-
     @router.callback_query(F.data == "adm_mods")
     async def admin_mods_menu(callback: types.CallbackQuery):
         if not check_admin(callback.from_user.id, bot_id):
@@ -3977,13 +3550,11 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             return
         await callback.message.edit_text("👮 Управление модераторами тейков:", reply_markup=build_mods_menu())
         await callback.answer()
-
     @router.callback_query(F.data == "mod_assign")
     async def mod_assign_start(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.edit_text("Введите username модератора тейков:", reply_markup=build_cancel_keyboard())
         await state.set_state(AdminStates.WaitingModeratorUsername)
         await callback.answer()
-
     @router.message(AdminStates.WaitingModeratorUsername)
     async def mod_assign_process(message: types.Message, state: FSMContext):
         uid = db.find_user_by_input(message.text)
@@ -3993,13 +3564,11 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         else:
             await message.answer("Пользователь не найден.", reply_markup=build_cancel_keyboard())
         await state.clear()
-
     @router.callback_query(F.data == "mod_remove")
     async def mod_remove_start(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.edit_text("Введите username для снятия:", reply_markup=build_cancel_keyboard())
         await state.set_state(AdminStates.WaitingRemoveModeratorUsername)
         await callback.answer()
-
     @router.message(AdminStates.WaitingRemoveModeratorUsername)
     async def mod_remove_process(message: types.Message, state: FSMContext):
         uid = db.find_user_by_input(message.text)
@@ -4009,7 +3578,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         else:
             await message.answer("Пользователь не найден.", reply_markup=build_cancel_keyboard())
         await state.clear()
-
     @router.callback_query(F.data == "mod_list")
     async def mod_list_show(callback: types.CallbackQuery):
         users_list = db.get_all_users_for_bot(bot_id)
@@ -4023,9 +3591,7 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         text = ", ".join(moderators) if moderators else "(нет модераторов тейков)"
         await callback.message.edit_text(f"👮 Модераторы тейков: {text}", reply_markup=build_mods_menu())
         await callback.answer()
-
     # =================== МОДЕРАТОРЫ ОБЪЯВЛЕНИЙ ===================
-
     @router.callback_query(F.data == "adm_announcement_mods")
     async def admin_announcement_mods_menu(callback: types.CallbackQuery):
         if not check_admin(callback.from_user.id, bot_id):
@@ -4036,7 +3602,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             reply_markup=build_announcement_mods_menu()
         )
         await callback.answer()
-
     @router.callback_query(F.data == "ann_mod_assign")
     async def announcement_mod_assign_start(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.edit_text(
@@ -4045,7 +3610,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         )
         await state.set_state(AdminStates.WaitingAnnouncementModUsername)
         await callback.answer()
-
     @router.message(AdminStates.WaitingAnnouncementModUsername)
     async def announcement_mod_assign_process(message: types.Message, state: FSMContext):
         uid = db.find_user_by_input(message.text)
@@ -4059,13 +3623,11 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         else:
             await message.answer("Пользователь не найден.", reply_markup=build_cancel_keyboard())
         await state.clear()
-
     @router.callback_query(F.data == "ann_mod_remove")
     async def announcement_mod_remove_start(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.edit_text("Введите username для снятия:", reply_markup=build_cancel_keyboard())
         await state.set_state(AdminStates.WaitingRemoveAnnouncementModUsername)
         await callback.answer()
-
     @router.message(AdminStates.WaitingRemoveAnnouncementModUsername)
     async def announcement_mod_remove_process(message: types.Message, state: FSMContext):
         uid = db.find_user_by_input(message.text)
@@ -4075,7 +3637,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         else:
             await message.answer("Пользователь не найден.", reply_markup=build_cancel_keyboard())
         await state.clear()
-
     @router.callback_query(F.data == "ann_mod_list")
     async def announcement_mod_list_show(callback: types.CallbackQuery):
         users_list = db.get_all_users_for_bot(bot_id)
@@ -4092,9 +3653,7 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             reply_markup=build_announcement_mods_menu()
         )
         await callback.answer()
-
     # =================== СПЕЦКНОПКИ ГЛАВНОГО АДМИНА ===================
-
     if bot_id == "main":
         @router.callback_query(F.data == "adm_reset_rates")
         async def admin_reset_rates(callback: types.CallbackQuery):
@@ -4104,7 +3663,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             reset_all_rates()
             await callback.answer("✅ Курсы сброшены.", show_alert=True)
             await callback.message.edit_text("Админ-панель:", reply_markup=build_admin_menu(callback.from_user.id, bot_id))
-
         @router.callback_query(F.data == "adm_reset_top")
         async def admin_reset_top(callback: types.CallbackQuery):
             if callback.from_user.id != MAIN_ADMIN_ID:
@@ -4115,7 +3673,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 db.set_bot_data(user['user_id'], bot_id, show_in_top=False)
             await callback.answer("✅ Топ сброшен.", show_alert=True)
             await callback.message.edit_text("Админ-панель:", reply_markup=build_admin_menu(callback.from_user.id, bot_id))
-
     @router.callback_query(F.data == "adm_balance")
     async def admin_show_balance(callback: types.CallbackQuery):
         cfg = config.bots.get(bot_id)
@@ -4126,9 +3683,7 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             reply_markup=build_admin_menu(callback.from_user.id, bot_id)
         )
         await callback.answer()
-
     # =================== ОТСЛЕЖИВАНИЕ КАНАЛА ===================
-
     @router.channel_post()
     async def handle_channel_post(message: types.Message):
         """Отслеживание постов в канале — создание аукционов по #аукцион."""
@@ -4147,7 +3702,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     logger.info(f"Группа комментариев: {discussion_chat_id}")
             except Exception as e:
                 logger.error(f"Ошибка получения группы комментариев: {e}")
-
             config.active_auctions[auction_id] = {
                 'bot_id': bot_id,
                 'channel': message.chat.id,
@@ -4164,7 +3718,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             logger.info(f"Аукцион создан: {auction_id}")
             task = asyncio.create_task(run_auction_timer(bot_instance, bot_id, auction_id))
             config.auction_tasks[auction_id] = task
-
     @router.message(F.forward_from_chat)
     async def handle_forwarded_post(message: types.Message):
         """
@@ -4185,7 +3738,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             auction['discussion_chat_id'] = message.chat.id
             config.save()
             logger.info(f"Аукцион {auction_id}: ID в группе = {message.message_id}")
-
     @router.message(F.reply_to_message)
     async def handle_comment_reply(message: types.Message):
         """Обработка комментариев — викторины и аукционы."""
@@ -4196,7 +3748,6 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         cfg = config.bots.get(bot_id)
         if not cfg:
             return
-
         original_msg_id = None
         if message.reply_to_message.forward_from_message_id:
             original_msg_id = str(message.reply_to_message.forward_from_message_id)
@@ -4204,12 +3755,10 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             original_msg_id = str(message.reply_to_message.message_id)
         if not original_msg_id:
             return
-
         user_id = message.from_user.id
         user_name = message.from_user.full_name
         comment_text = message.text.strip()
         comment_text_lower = comment_text.lower()
-
         # ===== ВИКТОРИНА =====
         quiz = config.active_quizzes.get(original_msg_id)
         if quiz and not quiz.get('solved') and quiz.get('bot_id') == bot_id:
@@ -4227,12 +3776,10 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 if original_msg_id in config.active_quizzes:
                     del config.active_quizzes[original_msg_id]
                     config.save()
-
         # ===== АУКЦИОН =====
         auction = config.active_auctions.get(original_msg_id)
         if not auction or auction.get('bot_id') != bot_id or auction.get('finished'):
             return
-
         # Пас / лив — откат к предыдущей ставке
         if PASS_PATTERN.match(comment_text.strip()):
             bid_history = auction.get('bid_history', [])
@@ -4263,44 +3810,37 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             task = asyncio.create_task(run_auction_timer(bot_instance, bot_id, original_msg_id))
             config.auction_tasks[original_msg_id] = task
             return
-
         # Проверяем ставку
         bet_match = BET_PATTERN.search(comment_text)
         if not bet_match:
             return
-
         bet_amount = int(bet_match.group(1))
         register_user(message.from_user, bot_id)
         user_balance = db.get_balance(user_id, bot_id)
         current_bid = auction.get('current_bid', 0)
-
         if bet_amount <= current_bid:
             try:
                 await message.reply(f"Ошибка: ставка равна или меньше предыдущей ({current_bid} {cfg.currency_emoji})")
             except Exception:
                 pass
             return
-
         if bet_amount - current_bid < MIN_BID_INCREMENT:
             try:
                 await message.reply(f"Ошибка: недостаточное повышение (минимум +{MIN_BID_INCREMENT} {cfg.currency_emoji})")
             except Exception:
                 pass
             return
-
         if user_balance != float('inf') and user_balance < bet_amount:
             try:
                 await message.reply(f"У вас недостаточно средств.\nБаланс: {user_balance:.0f} {cfg.currency_emoji}")
             except Exception as e:
                 logger.error(f"Ошибка ответа аукциона: {e}")
             return
-
         user_info = db.get_user(user_id)
         if user_info and user_info.get('username') and not user_info['username'].startswith('user'):
             display_name = f"@{user_info['username']}"
         else:
             display_name = user_name
-
         if 'bid_history' not in auction:
             auction['bid_history'] = []
         auction['bid_history'].append({
@@ -4313,33 +3853,86 @@ def create_shop_admin_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         auction['current_bid'] = bet_amount
         auction['last_bid_time'] = datetime.now().isoformat()
         config.save()
-
         try:
             await message.reply("Ставка принята")
         except Exception as e:
             logger.error(f"Ошибка подтверждения ставки: {e}")
-
         old_task = config.auction_tasks.get(original_msg_id)
         if old_task and not old_task.done():
             old_task.cancel()
         task = asyncio.create_task(run_auction_timer(bot_instance, bot_id, original_msg_id))
         config.auction_tasks[original_msg_id] = task
-
+    # =================== РАССЫЛКА (ТОЛЬКО ВЛАДЕЛЕЦ) ===================
+    @router.callback_query(F.data == "adm_broadcast")
+    async def callback_broadcast(callback: types.CallbackQuery, state: FSMContext):
+        """Начать рассылку (только владелец)."""
+        if not check_owner(callback.from_user.id, bot_id):
+            await callback.answer("Доступно только владельцу", show_alert=True)
+            return
+        await callback.message.edit_text(
+            "📢 Рассылка сообщения всем пользователям\n\n"
+            "Отправьте сообщение, которое нужно разослать.\n"
+            "Поддерживаются: текст, фото, видео, GIF",
+            reply_markup=build_cancel_keyboard()
+        )
+        await state.set_state(BroadcastStates.WaitingMessage)
+        await callback.answer()
+    @router.message(BroadcastStates.WaitingMessage)
+    async def process_broadcast(message: types.Message, state: FSMContext):
+        """Обработка и выполнение рассылки."""
+        if not check_owner(message.from_user.id, bot_id):
+            await state.clear()
+            return
+        all_users = db.get_all_users_for_bot(bot_id)
+        total = len(all_users)
+        success = 0
+        failed = 0
+        status_msg = await message.answer(
+            f"📢 Начинаю рассылку...\n\n"
+            f"Всего пользователей: {total}\n"
+            f"Отправлено: 0\n"
+            f"Ошибок: 0"
+        )
+        for idx, user in enumerate(all_users, 1):
+            try:
+                await message.copy_to(user['user_id'])
+                success += 1
+            except Exception as e:
+                failed += 1
+                logger.warning(f"Не удалось отправить {user['user_id']}: {e}")
+            # Обновляем статус каждые 10 пользователей
+            if idx % 10 == 0:
+                try:
+                    await status_msg.edit_text(
+                        f"📢 Рассылка в процессе...\n\n"
+                        f"Всего: {total}\n"
+                        f"✅ Отправлено: {success}\n"
+                        f"❌ Ошибок: {failed}\n"
+                        f"⏳ Прогресс: {idx}/{total}"
+                    )
+                except Exception:
+                    pass
+            await asyncio.sleep(0.05)  # Задержка против флуда
+        await status_msg.edit_text(
+            f"✅ Рассылка завершена!\n\n"
+            f"Всего: {total}\n"
+            f"✅ Доставлено: {success}\n"
+            f"❌ Не доставлено: {failed}",
+            reply_markup=build_main_menu(bot_id)
+        )
+        logger.info(f"📢 Рассылка завершена: {success}/{total}")
+        await state.clear()
     # ИСПРАВЛЕНИЕ: Безопасное подключение роутера
     try:
         dp.include_router(router)
         logger.info(f"✅ Роутер shop_admin для {bot_id} подключён")
     except RuntimeError as e:
         logger.warning(f"⚠️ Роутер shop_admin для {bot_id} уже подключён, пропускаем")
-
-
 # ====================== ПОДКЛЮЧЕНИЕ БОТОВ ======================
-
 def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
     """Обработчики подключения новых ботов (только главный бот)."""
     # ИСПРАВЛЕНИЕ: Создаём НОВЫЙ роутер
     router = Router(name="connection_handlers")
-
     @router.callback_query(F.data == "connect_bot")
     async def connect_start(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.edit_text(
@@ -4348,7 +3941,6 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
         )
         await state.set_state(ConnectBotStates.WaitingChannelUrl)
         await callback.answer()
-
     @router.message(ConnectBotStates.WaitingChannelUrl)
     async def connect_channel(message: types.Message, state: FSMContext):
         request_id = str(uuid.uuid4())[:8]
@@ -4359,7 +3951,6 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
         )
         config.pending_requests[request_id] = request
         config.save()
-
         user = db.get_user(message.from_user.id)
         approve_kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="✅ Одобрить", callback_data=f"request_approve_{request_id}"),
@@ -4377,7 +3968,6 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
             pass
         await message.answer("✅ Заявка отправлена!", reply_markup=build_main_menu("main"))
         await state.clear()
-
     @router.callback_query(F.data.startswith("request_approve_"))
     async def request_approve(callback: types.CallbackQuery):
         if callback.from_user.id != MAIN_ADMIN_ID:
@@ -4394,7 +3984,6 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
         ]])
         await callback.message.edit_text("Вы уверены?", reply_markup=confirm_kb)
         await callback.answer()
-
     @router.callback_query(F.data.startswith("request_back_"))
     async def request_back(callback: types.CallbackQuery):
         rid = callback.data[13:]
@@ -4410,7 +3999,6 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
                 reply_markup=approve_kb
             )
         await callback.answer()
-
     @router.callback_query(F.data.startswith("request_confirm_"))
     async def request_confirm(callback: types.CallbackQuery):
         if callback.from_user.id != MAIN_ADMIN_ID:
@@ -4433,7 +4021,6 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
         except Exception as e:
             await callback.message.edit_text(f"❌ Ошибка: {e}")
         await callback.answer()
-
     @router.callback_query(F.data.startswith("request_reject_"))
     async def request_reject(callback: types.CallbackQuery):
         if callback.from_user.id != MAIN_ADMIN_ID:
@@ -4450,7 +4037,6 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
             config.save()
         await callback.message.edit_text("❌ Заявка отклонена.")
         await callback.answer()
-
     @router.message(F.text.regexp(r'^\d{8,10}:[A-Za-z0-9_-]{35,}$'))
     async def receive_token(message: types.Message, state: FSMContext):
         uid = message.from_user.id
@@ -4479,7 +4065,6 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
                 pass
         except Exception as e:
             await message.answer(f"❌ Неверный токен: {e}\nПопробуйте ещё раз:")
-
     @router.message(ConnectBotStates.WaitingCurrencyName)
     async def connect_currency_name(message: types.Message, state: FSMContext):
         data = await state.get_data()
@@ -4489,7 +4074,6 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
             config.save()
         await message.answer("Отправьте эмодзи для валюты (💎, 🪙, ⭐):")
         await state.set_state(ConnectBotStates.WaitingCurrencyEmoji)
-
     @router.message(ConnectBotStates.WaitingCurrencyEmoji)
     async def connect_currency_emoji(message: types.Message, state: FSMContext):
         data = await state.get_data()
@@ -4499,7 +4083,6 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
             config.save()
         await message.answer("Выберите функции бота:", reply_markup=build_modules_keyboard())
         await state.set_state(ConnectBotStates.WaitingModules)
-
     @router.callback_query(ConnectBotStates.WaitingModules, F.data.startswith("module_"))
     async def connect_select_modules(callback: types.CallbackQuery, state: FSMContext):
         module_type = callback.data[7:]
@@ -4508,7 +4091,6 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
         if not req:
             await callback.answer("Ошибка", show_alert=True)
             return
-
         if module_type == "takes":
             req.modules = ["takes"]
             config.save()
@@ -4537,7 +4119,6 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
             )
             await state.set_state(ConnectBotStates.WaitingTakesChannel)
         await callback.answer()
-
     @router.message(ConnectBotStates.WaitingTakesChannel)
     async def connect_takes_channel(message: types.Message, state: FSMContext):
         data = await state.get_data()
@@ -4560,7 +4141,6 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
             await state.set_state(ConnectBotStates.WaitingAnnouncementChannel)
         else:
             await finalize_bot_setup(message, state, req, bot_instance)
-
     @router.message(ConnectBotStates.WaitingAnnouncementChannel)
     async def connect_announcement_channel(message: types.Message, state: FSMContext):
         data = await state.get_data()
@@ -4576,7 +4156,6 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
         req.shop_channel = channel
         config.save()
         await finalize_bot_setup(message, state, req, bot_instance)
-
     async def finalize_bot_setup(message, state, req, main_bot):
         """Завершение настройки и запуск подключённого бота."""
         await message.answer("⏳ Запускаю бота...")
@@ -4597,7 +4176,6 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
                 take_cooldown_minutes=TAKE_COOLDOWN_MINUTES
             )
             config.bots[new_bot_id] = new_config
-
             register_user(message.from_user, new_bot_id)
             db.set_balance(req.user_id, new_bot_id, float('inf'))
             db.set_bot_data(
@@ -4605,12 +4183,10 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
                 is_owner=True, is_admin=True,
                 activated_at=datetime.now().isoformat()
             )
-
             config.exchange_rates.rates[new_bot_id] = 0.5
             if req.request_id in config.pending_requests:
                 del config.pending_requests[req.request_id]
             config.save()
-
             new_bot = Bot(token=req.token)
             new_dp = Dispatcher(storage=MemoryStorage())
             create_bot_handlers(new_bot_id, new_bot, new_dp)
@@ -4618,14 +4194,12 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
             config.active_bots[new_bot_id] = new_bot
             config.active_dispatchers[new_bot_id] = new_dp
             asyncio.create_task(new_dp.start_polling(new_bot))
-
             modules_text = ", ".join(req.modules)
             channels_info = ""
             if req.takes_channel:
                 channels_info += f"📝 Тейки: {req.takes_channel}\n"
             if req.announcement_channel:
                 channels_info += f"📢 Объявления: {req.announcement_channel}\n"
-
             await message.answer(
                 f"✅ Бот успешно подключён!\n\n"
                 f"💰 Валюта: {req.currency_name} {req.currency_emoji}\n"
@@ -4639,121 +4213,40 @@ def create_connection_handlers(bot_instance: Bot, dp: Dispatcher):
                 await main_bot.send_message(MAIN_ADMIN_ID, f"✅ Бот {new_bot_id} успешно запущен!")
             except Exception:
                 pass
-
         except Exception as e:
             logger.error(f"Ошибка запуска бота: {e}")
             await message.answer(f"❌ Ошибка: {e}", reply_markup=build_main_menu("main"))
-
         await state.clear()
-
-        # =================== РАССЫЛКА (ТОЛЬКО ВЛАДЕЛЕЦ) ===================
-
-    @router.callback_query(F.data == "adm_broadcast")
-    async def callback_broadcast(callback: types.CallbackQuery, state: FSMContext):
-        """Начать рассылку (только владелец)."""
-        if not check_owner(callback.from_user.id, bot_id):
-            await callback.answer("Доступно только владельцу", show_alert=True)
-            return
-        
-        await callback.message.edit_text(
-            "📢 Рассылка сообщения всем пользователям\n\n"
-            "Отправьте сообщение, которое нужно разослать.\n"
-            "Поддерживаются: текст, фото, видео, GIF",
-            reply_markup=build_cancel_keyboard()
-        )
-        await state.set_state(BroadcastStates.WaitingMessage)
-        await callback.answer()
-
-    @router.message(BroadcastStates.WaitingMessage)
-    async def process_broadcast(message: types.Message, state: FSMContext):
-        """Обработка и выполнение рассылки."""
-        if not check_owner(message.from_user.id, bot_id):
-            await state.clear()
-            return
-        
-        all_users = db.get_all_users_for_bot(bot_id)
-        total = len(all_users)
-        success = 0
-        failed = 0
-        
-        status_msg = await message.answer(
-            f"📢 Начинаю рассылку...\n\n"
-            f"Всего пользователей: {total}\n"
-            f"Отправлено: 0\n"
-            f"Ошибок: 0"
-        )
-        
-        for idx, user in enumerate(all_users, 1):
-            try:
-                await message.copy_to(user['user_id'])
-                success += 1
-            except Exception as e:
-                failed += 1
-                logger.warning(f"Не удалось отправить {user['user_id']}: {e}")
-            
-            # Обновляем статус каждые 10 пользователей
-            if idx % 10 == 0:
-                try:
-                    await status_msg.edit_text(
-                        f"📢 Рассылка в процессе...\n\n"
-                        f"Всего: {total}\n"
-                        f"✅ Отправлено: {success}\n"
-                        f"❌ Ошибок: {failed}\n"
-                        f"⏳ Прогресс: {idx}/{total}"
-                    )
-                except:
-                    pass
-            
-            await asyncio.sleep(0.05)  # Задержка против флуда
-        
-        await status_msg.edit_text(
-            f"✅ Рассылка завершена!\n\n"
-            f"Всего: {total}\n"
-            f"✅ Доставлено: {success}\n"
-            f"❌ Не доставлено: {failed}",
-            reply_markup=build_main_menu(bot_id)
-        )
-        
-        logger.info(f"📢 Рассылка завершена: {success}/{total}")
-        await state.clear()
-
     dp.include_router(router)
-
-
 # ====================== ГЛАВНАЯ ФУНКЦИЯ ======================
-
 async def main():
     """Точка входа: подключение БД, загрузка конфигурации, запуск ботов."""
     logger.info("Подключение к базе данных...")
     db.connect()
     logger.info("Загрузка конфигурации...")
     config.load()
-
     # Добавляем в основной бот знание о боте Искр
     if "sparks" not in config.bots:
-        from main import BotConfig # убедись что импорт корректен
+        # ИСПРАВЛЕНИЕ: убран избыточный самоимпорт "from main import BotConfig" —
+        # BotConfig уже определён выше в этом же модуле.
         config.bots["sparks"] = BotConfig(
             bot_id="sparks",
             token="EXTERNAL",
             currency_name="искры",
             currency_emoji="✨",
-            base_exchange_rate=0.5, # 1 луна = 2 искры, значит искра = 0.5 луны
-            modules=["economy"] 
+            base_exchange_rate=0.5,  # 1 луна = 2 искры, значит искра = 0.5 луны
+            modules=["economy"]
         )
         config.exchange_rates.rates["sparks"] = 0.5
         config.save()
         logger.info("✅ Бот Искр интегрирован в систему основного бота")
-
     asyncio.create_task(background_cleanup_task())
-
     main_cfg = config.bots.get("main")
     if main_cfg:
         logger.info(f"Канал объявлений главного бота: '{main_cfg.announcement_channel}'")
         logger.info(f"Лимит тейков: {MAX_TAKES} шт, восстановление каждые {TAKE_COOLDOWN_MINUTES} мин")
-
-    # ===== НОВОЕ: Автоматическая регистрация админов из переменных окружения =====
+    # ===== Автоматическая регистрация админов из переменных окружения =====
     logger.info("Регистрация админов из переменных окружения...")
-    
     # 1. Главный админ (владелец)
     main_owner_data = db.get_bot_data(MAIN_ADMIN_ID, "main")
     if not main_owner_data.get('is_owner'):
@@ -4761,7 +4254,6 @@ async def main():
         existing_user = db.get_user(MAIN_ADMIN_ID)
         if not existing_user:
             db.create_or_update_user(MAIN_ADMIN_ID, f"admin{MAIN_ADMIN_ID}", "Главный админ")
-        
         db.set_balance(MAIN_ADMIN_ID, "main", float('inf'))
         db.set_bot_data(MAIN_ADMIN_ID, "main",
             quiz_passed=False, show_in_top=False,
@@ -4775,25 +4267,21 @@ async def main():
         logger.info(f"✅ Главный админ {MAIN_ADMIN_ID} зарегистрирован")
     else:
         logger.info(f"✅ Главный админ {MAIN_ADMIN_ID} уже зарегистрирован")
-    
     # 2. Остальные админы
     for admin_id in ADMIN_IDS:
         if admin_id == MAIN_ADMIN_ID:
             continue  # Главного админа уже зарегистрировали
-        
         admin_data = db.get_bot_data(admin_id, "main")
         if not admin_data.get('is_admin'):
             # Создаём запись об админе если его нет
             existing_user = db.get_user(admin_id)
             if not existing_user:
                 db.create_or_update_user(admin_id, f"admin{admin_id}", f"Админ {admin_id}")
-            
             # Даём стартовый баланс если ещё нет
             current_balance = db.get_balance(admin_id, "main")
             if current_balance == 0:
                 starting_balance = main_cfg.admin_starting_balance if main_cfg else 100
                 db.set_balance(admin_id, "main", starting_balance)
-            
             db.set_bot_data(admin_id, "main",
                 quiz_passed=False, show_in_top=True,
                 is_blocked=False, is_frozen=False,
@@ -4806,7 +4294,6 @@ async def main():
             logger.info(f"✅ Админ {admin_id} зарегистрирован")
         else:
             logger.info(f"✅ Админ {admin_id} уже зарегистрирован")
-    
     # 3. Регистрируем владельцев подключённых ботов
     for bot_id, bot_cfg in config.bots.items():
         if bot_id == "main":
@@ -4817,7 +4304,6 @@ async def main():
                 existing_user = db.get_user(bot_cfg.owner_id)
                 if not existing_user:
                     db.create_or_update_user(bot_cfg.owner_id, f"owner{bot_cfg.owner_id}", f"Владелец {bot_cfg.owner_id}")
-                
                 db.set_balance(bot_cfg.owner_id, bot_id, float('inf'))
                 db.set_bot_data(bot_cfg.owner_id, bot_id,
                     quiz_passed=False, show_in_top=False,
@@ -4829,22 +4315,16 @@ async def main():
                     last_promo_at=None
                 )
                 logger.info(f"✅ Владелец {bot_cfg.owner_id} бота {bot_id} зарегистрирован")
-
     # Главный бот
     main_bot = Bot(token=MAIN_BOT_TOKEN)
     main_dp = Dispatcher(storage=MemoryStorage())
-
-   # === ВСТАВИТЬ СЮДА ===
     main_dp.message.outer_middleware(RegistrationMiddleware())
     main_dp.callback_query.outer_middleware(RegistrationMiddleware())
-    
     create_bot_handlers("main", main_bot, main_dp)
     create_shop_admin_handlers("main", main_bot, main_dp)
     create_connection_handlers(main_bot, main_dp)
-    
     config.active_bots["main"] = main_bot
     config.active_dispatchers["main"] = main_dp
-
     # Запуск подключённых ботов (БЕЗ главного)
     for bot_id, bot_cfg in config.bots.items():
         if bot_id == "main":
@@ -4852,36 +4332,27 @@ async def main():
         try:
             connected_bot = Bot(token=bot_cfg.token)
             connected_dp = Dispatcher(storage=MemoryStorage())
-
-             # === ВСТАВИТЬ СЮДА (для каждого дочернего бота) ===
             connected_dp.message.outer_middleware(RegistrationMiddleware())
-            connected_dp.callback_query.outer_middleware(RegistrationMiddleware()) 
-            
+            connected_dp.callback_query.outer_middleware(RegistrationMiddleware())
             create_bot_handlers(bot_id, connected_bot, connected_dp)
             create_shop_admin_handlers(bot_id, connected_bot, connected_dp)
-            
             config.active_bots[bot_id] = connected_bot
             config.active_dispatchers[bot_id] = connected_dp
-            
             asyncio.create_task(connected_dp.start_polling(connected_bot))
             logger.info(f"Запущен подключённый бот: {bot_id}")
         except Exception as e:
             logger.error(f"Ошибка запуска бота {bot_id}: {e}")
-
     # Восстановление задач удаления пиара после перезапуска
     now = datetime.now()
     to_remove = []
-
     for deletion_id, info in config.scheduled_deletions.items():
         try:
             delete_at = datetime.fromisoformat(info['delete_at'])
             target_bot = config.active_bots.get(info['bot_id'])
-
             if not target_bot:
                 logger.warning(f"Бот {info['bot_id']} не найден для задачи {deletion_id}")
                 to_remove.append(deletion_id)
                 continue
-
             if delete_at <= now:
                 logger.info(f"Просроченная задача {deletion_id}, удаляем сейчас")
                 try:
@@ -4901,17 +4372,14 @@ async def main():
         except Exception as e:
             logger.error(f"Ошибка восстановления задачи {deletion_id}: {e}")
             to_remove.append(deletion_id)
-
     for deletion_id in to_remove:
         if deletion_id in config.scheduled_deletions:
             del config.scheduled_deletions[deletion_id]
     if to_remove:
         config.save()
-
     logger.info(f"Активных задач удаления: {len(config.scheduled_deletions)}")
     logger.info("Запуск главного бота...")
     await main_dp.start_polling(main_bot)
-
 async def background_cleanup_task():
     """Фоновая задача очистки старых тейков."""
     while True:
@@ -4922,8 +4390,6 @@ async def background_cleanup_task():
                 logger.info(f"🗑️ Автоочистка: удалено {deleted} старых тейков")
         except Exception as e:
             logger.error(f"Ошибка автоочистки: {e}")
-
-
 if __name__ == "__main__":
     print("🚀 Запуск бота...", flush=True)
     try:
