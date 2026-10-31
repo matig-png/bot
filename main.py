@@ -14,7 +14,7 @@ from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, User, MessageEntity
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, User, MessageEntity, LinkPreviewOptions
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 # Supabase
 from supabase import create_client, Client
@@ -1634,7 +1634,15 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         await callback.answer()
     @router.callback_query(F.data == "user_mode")
     async def callback_user_mode(callback: types.CallbackQuery):
-        await callback.message.edit_text("Выберите действие:", reply_markup=build_main_menu(bot_id))
+        await callback.message.edit_text(
+            '<blockquote><tg-emoji emoji-id="5240276197551664792">✨</tg-emoji> '
+            '<b><i>Добро пожаловать!</i></b></blockquote>\n'
+            '<tg-emoji emoji-id="5239964584789438173">✨</tg-emoji>'
+            '<i>Выберите действие:</i>'
+            '<tg-emoji emoji-id="5239964584789438173">✨</tg-emoji>',
+            parse_mode="HTML",
+            reply_markup=build_main_menu(bot_id)
+        )
         await callback.answer()
     @router.callback_query(F.data == "admin_mode")
     async def callback_admin_mode(callback: types.CallbackQuery):
@@ -1909,8 +1917,25 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             await callback.answer("Канал для объявлений не настроен.", show_alert=True)
             return
         await callback.message.edit_text(
-            "📢 Отправьте ваше объявление (можно несколько фото/видео)",
-            reply_markup=build_cancel_keyboard()
+            '─ִֺ─⊹ֺ⊱ Перед отправкой прочтите '
+            '<b><a href="https://telegra.ph/PRAVILA-POSTOV-V-SHOPE-10-28">правила публикаций в шопе</a></b>\n\n'
+            '<tg-emoji emoji-id="5240140094333020716">✨</tg-emoji>Отправьте ваше объявление, '
+            'оно будет отправлено на модерацию\n\n'
+            '<tg-emoji emoji-id="5240140094333020716">✨</tg-emoji>Для удобства подписчиков '
+            'рекомендуем поставить хэштеги\n\n'
+            '<tg-emoji emoji-id="5239947087092674057">✨</tg-emoji>'
+            '<tg-emoji emoji-id="5240277099494793815">✨</tg-emoji>'
+            '<tg-emoji emoji-id="5240019178118736625">✨</tg-emoji>'
+            '<tg-emoji emoji-id="5240433268800648857">✨</tg-emoji>'
+            '<tg-emoji emoji-id="5240211502459286389">✨</tg-emoji>'
+            '<tg-emoji emoji-id="5240191118544497151">✨</tg-emoji>'
+            '<tg-emoji emoji-id="5237784017008361391">✨</tg-emoji>'
+            '<tg-emoji emoji-id="5240052034618553066">✨</tg-emoji>'
+            '<tg-emoji emoji-id="5240407799644581079">✨</tg-emoji>'
+            '<tg-emoji emoji-id="5239947087092674057">✨</tg-emoji>',
+            parse_mode="HTML",
+            reply_markup=build_cancel_keyboard(),
+            link_preview_options=LinkPreviewOptions(is_disabled=True)
         )
         await state.set_state(AnnouncementStates.WaitingAnnouncement)
         await callback.answer()
@@ -1990,7 +2015,21 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     import traceback
                     logger.error(traceback.format_exc())
             try:
-                await bot.send_message(user_id, "📝 Объявление отправлено на модерацию.", reply_markup=build_main_menu(bot_id))
+                await bot.send_message(user_id, '<tg-emoji emoji-id="5890997763331591703">🔊</tg-emoji> Объявление отправлено на модерацию \n\n'
+        '<tg-emoji emoji-id="5240140094333020716">✨</tg-emoji>Его выложат в течении дня '
+        '<tg-emoji emoji-id="5240149921218195956">✨</tg-emoji>\n\n'
+        '<tg-emoji emoji-id="5239947087092674057">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5240277099494793815">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5240019178118736625">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5240433268800648857">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5240211502459286389">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5240191118544497151">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5237784017008361391">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5240052034618553066">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5240407799644581079">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5239947087092674057">✨</tg-emoji>',
+        parse_mode="HTML", 
+        reply_markup=build_main_menu(bot_id))
             except Exception:
                 pass
         else:
@@ -2062,7 +2101,21 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                     logger.error(f"Ошибка отправки модератору: {e}")
                     import traceback
                     logger.error(traceback.format_exc())
-            await message.answer("📝 Объявление отправлено на модерацию.", reply_markup=build_main_menu(bot_id))
+            await message.answer('<tg-emoji emoji-id="5890997763331591703">🔊</tg-emoji> Объявление отправлено на модерацию \n\n'
+        '<tg-emoji emoji-id="5240140094333020716">✨</tg-emoji>Его выложат в течении дня '
+        '<tg-emoji emoji-id="5240149921218195956">✨</tg-emoji>\n\n'
+        '<tg-emoji emoji-id="5239947087092674057">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5240277099494793815">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5240019178118736625">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5240433268800648857">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5240211502459286389">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5240191118544497151">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5237784017008361391">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5240052034618553066">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5240407799644581079">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5239947087092674057">✨</tg-emoji>',
+        parse_mode="HTML",
+        reply_markup=build_main_menu(bot_id))
         else:
             try:
                 await bot_instance.copy_message(chat_id=cfg.announcement_channel, from_chat_id=message.chat.id, message_id=message.message_id)
@@ -2653,10 +2706,26 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
             cfg = config.bots.get(bot_id)
             pause_text = " ⏸ (на паузе — будет отправлен позже)" if cfg.takes_paused else ""
             await callback.message.edit_text(
-                f"📝 Отправьте тейк с хештегом #тейк{pause_text}\n"
-                f"💡 Можно отправить несколько фото/видео как альбом\n"
-                f"⏱ {cooldown_msg}",
-                reply_markup=build_cancel_keyboard()
+        '─ִֺ─⊹ֺ⊱ Перед отправкой прочтите '
+        '<b><a href="https://telegra.ph/Pravila-tejkov-10-28-4">правила тейков</a></b>\n\n'
+        '<tg-emoji emoji-id="5240140094333020716">✨</tg-emoji>Отправьте любое сообщение '
+        f'с #тейк в конце{pause_text} (пожалуйста не пишите ничего после него)\n\n'
+        '<tg-emoji emoji-id="5240140094333020716">✨</tg-emoji>Вы можете просто отправлять '
+        'сообщение с хэштегом без лишних действий и даже этой кнопки\n\n'
+        '<tg-emoji emoji-id="5239947087092674057">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5240277099494793815">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5240019178118736625">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5240433268800648857">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5240211502459286389">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5240191118544497151">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5237784017008361391">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5240052034618553066">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5240407799644581079">✨</tg-emoji>'
+        '<tg-emoji emoji-id="5239947087092674057">✨</tg-emoji>\n\n'
+        f'<tg-emoji emoji-id="5258258882022612173">⏲️</tg-emoji> Тейков: {remaining_takes}/3\n',
+        parse_mode="HTML",
+        reply_markup=build_cancel_keyboard(),
+        link_preview_options=LinkPreviewOptions(is_disabled=True)
             )
             await state.set_state(TakeStates.WaitingTake)
             await callback.answer()
