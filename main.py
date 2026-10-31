@@ -944,13 +944,18 @@ def build_main_menu(bot_id: str) -> InlineKeyboardMarkup:
         return InlineKeyboardMarkup(inline_keyboard=[])
     builder = InlineKeyboardBuilder()
     if "takes" in bot_cfg.modules:
-        builder.row(InlineKeyboardButton(text="📝 Отправить тейк", callback_data="send_take"))
-        builder.row(InlineKeyboardButton(text="✏️ Мои тейки", callback_data="my_takes"))
+        builder.row(InlineKeyboardButton(text="Отправить тейк",
+            icon_custom_emoji_id="6039779802741739617", callback_data="send_take"))
+        builder.row(InlineKeyboardButton(text="Мои тейки", 
+            icon_custom_emoji_id="6039614175917903752", callback_data="my_takes"))
     if "shop" in bot_cfg.modules:
-        builder.row(InlineKeyboardButton(text="📢 Продать в шопе", callback_data="post_announcement"))
-    builder.row(InlineKeyboardButton(text="💱 Валюта", callback_data="currency_menu"))
+        builder.row(InlineKeyboardButton(text="Продать в шопе", 
+            icon_custom_emoji_id="6021418126061605425", callback_data="post_announcement"))
+    builder.row(InlineKeyboardButton(text="Валюта", 
+            icon_custom_emoji_id="5935758241748230351", callback_data="currency_menu"))
     if bot_id == "main":
-        builder.row(InlineKeyboardButton(text="🤖 Подключить бота", callback_data="connect_bot"))
+        builder.row(InlineKeyboardButton(text="Подключить бота", 
+            icon_custom_emoji_id="5983580310292402968", callback_data="connect_bot"))
     return builder.as_markup()
 def build_currency_menu(bot_id: str) -> InlineKeyboardMarkup:
     """
@@ -959,18 +964,18 @@ def build_currency_menu(bot_id: str) -> InlineKeyboardMarkup:
     """
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="💰 Заработать", callback_data="earn"),
-        InlineKeyboardButton(text="💸 Перевести", callback_data="transfer")
+        InlineKeyboardButton(text="Заработать", icon_custom_emoji_id="6032644646587338669", callback_data="earn"),
+        InlineKeyboardButton(text="Перевести", icon_custom_emoji_id="5891105528356018797", callback_data="transfer")
     )
     builder.row(
-        InlineKeyboardButton(text="🏆 Топ", callback_data="top"),
-        InlineKeyboardButton(text="💳 Баланс", callback_data="balance")
+        InlineKeyboardButton(text="Топ", icon_custom_emoji_id="6032594876506312598", callback_data="top"),
+        InlineKeyboardButton(text="Баланс", icon_custom_emoji_id="5769126056262898415", callback_data="balance")
     )
     builder.row(
-        InlineKeyboardButton(text="💱 Конвертация", callback_data="convert"),
-        InlineKeyboardButton(text="📊 Курсы", callback_data="rates")
+        InlineKeyboardButton(text="Конвертация", icon_custom_emoji_id="6039859895291877126", callback_data="convert"),
+        InlineKeyboardButton(text="Курсы", icon_custom_emoji_id="5938539885907415367", callback_data="rates")
     )
-    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="back_main"))
+    builder.row(InlineKeyboardButton(text="Назад", icon_custom_emoji_id="5960671702059848143", callback_data="back_main"))
     return builder.as_markup()
 def build_admin_menu(uid: int, bot_id: str) -> InlineKeyboardMarkup:
     """Админ-панель."""
@@ -1017,7 +1022,7 @@ def build_admin_menu(uid: int, bot_id: str) -> InlineKeyboardMarkup:
 def build_cancel_keyboard() -> InlineKeyboardMarkup:
     """Кнопка отмены."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")]
+        [InlineKeyboardButton(text="Отмена", icon_custom_emoji_id="5774077015388852135", callback_data="cancel")]
     ])
 def build_censor_menu() -> InlineKeyboardMarkup:
     """Меню цензуры."""
@@ -1032,7 +1037,7 @@ def build_censor_menu() -> InlineKeyboardMarkup:
     )
     builder.row(
         InlineKeyboardButton(text="📋 Список", callback_data="censor_list"),
-        InlineKeyboardButton(text="◀️ Назад", callback_data="admin_mode")
+        InlineKeyboardButton(text="Назад", icon_custom_emoji_id="5960671702059848143", callback_data="admin_mode")
     )
     return builder.as_markup()
 def build_mods_menu() -> InlineKeyboardMarkup:
@@ -1044,7 +1049,7 @@ def build_mods_menu() -> InlineKeyboardMarkup:
     )
     builder.row(
         InlineKeyboardButton(text="📋 Список", callback_data="mod_list"),
-        InlineKeyboardButton(text="◀️ Назад", callback_data="admin_mode")
+        InlineKeyboardButton(text="Назад", icon_custom_emoji_id="5960671702059848143", callback_data="admin_mode")
     )
     return builder.as_markup()
 def build_announcement_mods_menu() -> InlineKeyboardMarkup:
@@ -1056,7 +1061,7 @@ def build_announcement_mods_menu() -> InlineKeyboardMarkup:
     )
     builder.row(
         InlineKeyboardButton(text="📋 Список", callback_data="ann_mod_list"),
-        InlineKeyboardButton(text="◀️ Назад", callback_data="admin_mode")
+        InlineKeyboardButton(text="Назад", icon_custom_emoji_id="5960671702059848143", callback_data="admin_mode")
     )
     return builder.as_markup()
 def build_currency_keyboard(exclude: str = None) -> InlineKeyboardMarkup:
@@ -1068,7 +1073,7 @@ def build_currency_keyboard(exclude: str = None) -> InlineKeyboardMarkup:
                 text=f"{bot_cfg.currency_name} {bot_cfg.currency_emoji}",
                 callback_data=f"currency_{bot_id}"
             ))
-    builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"))
+    builder.row(InlineKeyboardButton(text="Отмена", icon_custom_emoji_id="5774077015388852135", callback_data="cancel"))
     return builder.as_markup()
 def build_modules_keyboard() -> InlineKeyboardMarkup:
     """Выбор модулей при подключении бота."""
@@ -1076,7 +1081,7 @@ def build_modules_keyboard() -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="📝 Только тейки", callback_data="module_takes"))
     builder.row(InlineKeyboardButton(text="🛒 Только магазин", callback_data="module_shop"))
     builder.row(InlineKeyboardButton(text="📝🛒 Всё", callback_data="module_all"))
-    builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"))
+    builder.row(InlineKeyboardButton(text="Отмена", icon_custom_emoji_id="5774077015388852135", callback_data="cancel"))
     return builder.as_markup()
 def build_take_moderation_keyboard(take_id: str, uid: int, is_blocked: bool) -> InlineKeyboardMarkup:
     """
@@ -1085,8 +1090,8 @@ def build_take_moderation_keyboard(take_id: str, uid: int, is_blocked: bool) -> 
     """
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="✅ Отправить", callback_data=f"take_approve_{take_id}"),
-        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"take_reject_{take_id}")
+        InlineKeyboardButton(text="Отправить", icon_custom_emoji_id="5774022692642492953", callback_data=f"take_approve_{take_id}"),
+        InlineKeyboardButton(text="Отклонить", icon_custom_emoji_id="5774077015388852135", callback_data=f"take_reject_{take_id}")
     )
     builder.row(
         InlineKeyboardButton(text="🚫 Заблокировать (тейки)", callback_data=f"user_block_{uid}")
@@ -1099,8 +1104,8 @@ def build_take_moderation_keyboard_blocked(take_id: str, uid: int) -> InlineKeyb
     """
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="✅ Отправить", callback_data=f"take_approve_{take_id}"),
-        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"take_reject_{take_id}")
+        InlineKeyboardButton(text="Отправить", icon_custom_emoji_id="5774022692642492953", callback_data=f"take_approve_{take_id}"),
+        InlineKeyboardButton(text="Отклонить", icon_custom_emoji_id="5774077015388852135", callback_data=f"take_reject_{take_id}")
     )
     builder.row(
         InlineKeyboardButton(text="🔓 Разблокировать (тейки)", callback_data=f"take_unblock_{uid}")
@@ -1115,7 +1120,7 @@ def build_published_take_keyboard(channel_msg_ids: List[int], uid: int, is_block
     # ИЗМЕНЕНИЕ: Сохраняем список ID через запятую
     msg_ids_str = ",".join(map(str, channel_msg_ids))
     builder.row(
-        InlineKeyboardButton(text="🗑 Удалить из канала", callback_data=f"take_delete_{msg_ids_str}")
+        InlineKeyboardButton(text="Удалить из канала", icon_custom_emoji_id="6039522349517115015", callback_data=f"take_delete_{msg_ids_str}")
     )
     builder.row(
         InlineKeyboardButton(text="🚫 Заблокировать (тейки)", callback_data=f"user_block_{uid}")
@@ -1130,7 +1135,7 @@ def build_published_take_keyboard_blocked(channel_msg_ids: List[int], uid: int) 
     # ИЗМЕНЕНИЕ: Сохраняем список ID через запятую
     msg_ids_str = ",".join(map(str, channel_msg_ids))
     builder.row(
-        InlineKeyboardButton(text="🗑 Удалить из канала", callback_data=f"take_delete_{msg_ids_str}")
+        InlineKeyboardButton(text="Удалить из канала", icon_custom_emoji_id="6039522349517115015", callback_data=f"take_delete_{msg_ids_str}")
     )
     builder.row(
         InlineKeyboardButton(text="🔓 Разблокировать (тейки)", callback_data=f"take_unblock_{uid}")
@@ -1180,7 +1185,7 @@ def build_promo_confirm_keyboard() -> InlineKeyboardMarkup:
     """Подтверждение пиара."""
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="✅ Оплатить", callback_data="promo_pay"),
-        InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")
+        InlineKeyboardButton(text="Отмена", icon_custom_emoji_id="5774077015388852135", callback_data="cancel")
     ]])
 def build_quiz_keyboard(question_num: int) -> InlineKeyboardMarkup:
     """Варианты ответов викторины."""
@@ -1626,11 +1631,25 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
     @router.message(Command("cancel"))
     async def cmd_cancel(message: types.Message, state: FSMContext):
         await state.clear()
-        await message.answer("Действие отменено.", reply_markup=build_main_menu(bot_id))
+        await message.answer(            
+            '<blockquote><tg-emoji emoji-id="5240276197551664792">✨</tg-emoji> '
+            '<b><i>Добро пожаловать!</i></b></blockquote>\n'
+            '<tg-emoji emoji-id="5239964584789438173">✨</tg-emoji>'
+            '<i>Выберите действие:</i>'
+            '<tg-emoji emoji-id="5239964584789438173">✨</tg-emoji>',
+            parse_mode="HTML",  
+            reply_markup=build_main_menu(bot_id))
     @router.callback_query(F.data == "cancel")
     async def callback_cancel(callback: types.CallbackQuery, state: FSMContext):
         await state.clear()
-        await callback.message.edit_text("Действие отменено.", reply_markup=build_main_menu(bot_id))
+        await callback.message.edit_text(            
+            '<blockquote><tg-emoji emoji-id="5240276197551664792">✨</tg-emoji> '
+            '<b><i>Добро пожаловать!</i></b></blockquote>\n'
+            '<tg-emoji emoji-id="5239964584789438173">✨</tg-emoji>'
+            '<i>Выберите действие:</i>'
+            '<tg-emoji emoji-id="5239964584789438173">✨</tg-emoji>',
+            parse_mode="HTML", 
+            reply_markup=build_main_menu(bot_id))
         await callback.answer()
     @router.callback_query(F.data == "user_mode")
     async def callback_user_mode(callback: types.CallbackQuery):
@@ -1656,12 +1675,26 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         await callback.answer()
     @router.callback_query(F.data == "back_main")
     async def callback_back_main(callback: types.CallbackQuery):
-        await callback.message.edit_text("Выберите действие:", reply_markup=build_main_menu(bot_id))
+        await callback.message.edit_text(            
+            '<blockquote><tg-emoji emoji-id="5240276197551664792">✨</tg-emoji> '
+            '<b><i>Добро пожаловать!</i></b></blockquote>\n'
+            '<tg-emoji emoji-id="5239964584789438173">✨</tg-emoji>'
+            '<i>Выберите действие:</i>'
+            '<tg-emoji emoji-id="5239964584789438173">✨</tg-emoji>',
+            parse_mode="HTML", 
+            reply_markup=build_main_menu(bot_id))
         await callback.answer()
     @router.callback_query(F.data == "currency_menu")
     async def callback_currency_menu(callback: types.CallbackQuery):
         """НОВОЕ: подменю 'Валюта' — баланс/перевод/топ/курсы/конвертация/заработок."""
-        await callback.message.edit_text("💱 Валюта:", reply_markup=build_currency_menu(bot_id))
+        await callback.message.edit_text(            
+            '<blockquote><tg-emoji emoji-id="5935758241748230351">💎</tg-emoji> '
+            '<b><i>Валюта</i></b></blockquote>\n'
+            '<tg-emoji emoji-id="5239964584789438173">✨</tg-emoji>'
+            '<i>Выберите действие:</i>'
+            '<tg-emoji emoji-id="5239964584789438173">✨</tg-emoji>',
+            parse_mode="HTML",  
+            reply_markup=build_currency_menu(bot_id))
         await callback.answer()
     @router.callback_query(F.data == "balance")
     async def callback_balance(callback: types.CallbackQuery):
@@ -1847,7 +1880,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
         if cfg.channel_url:
             builder.row(InlineKeyboardButton(text="📢 Перейти в канал", url=cfg.channel_url))
         builder.row(InlineKeyboardButton(text="❓ Викторина", callback_data="quiz_start"))
-        builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="currency_menu"))
+        builder.row(InlineKeyboardButton(text="Назад", icon_custom_emoji_id="5960671702059848143", callback_data="currency_menu"))
         await callback.message.edit_text("Способы заработка:", reply_markup=builder.as_markup())
         await callback.answer()
     @router.callback_query(F.data == "quiz_start")
@@ -3031,7 +3064,7 @@ def create_bot_handlers(bot_id: str, bot_instance: Bot, dp: Dispatcher):
                 text=delete_text,
                 callback_data=f"delete_my_take_{take_id}"
             ))
-            builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="my_takes"))
+            builder.row(InlineKeyboardButton(text="Назад", icon_custom_emoji_id="5960671702059848143", callback_data="my_takes"))
             caption_text = take_data.get('caption', 'Без текста')[:100]
             type_text = "Альбом" if take_data['content_type'] == 'media_group' else "Одиночный"
             await callback.message.edit_text(
